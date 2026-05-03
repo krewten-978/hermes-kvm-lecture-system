@@ -2,9 +2,9 @@
 
 A minimal FastAPI starter for the Hermes-controlled classroom lecture presenter.
 
-## Phase 1D status
+## Phase 1E status
 
-Phase 1D provides:
+Phase 1E provides:
 
 - Basic FastAPI application
 - Static files folder mounted at `/static`
@@ -17,6 +17,8 @@ Phase 1D provides:
 - Protected `/` page
 - Protected `/health` endpoint
 - Protected `/api/session` endpoint
+- Protected `notes/` folder on the server
+- Protected `GET /api/notes/{filename}` endpoint for markdown notes
 - Logout button
 
 ## Configure the admin password
@@ -76,17 +78,48 @@ Then open:
 - Laptop presenter page: `http://127.0.0.1:8000/`
 - Health check: `http://YOUR_SERVER_IP:8000/health`
 
-## Phase 1D test checklist
+## Markdown notes
 
-- Open `/` and confirm you are redirected to `/login`.
+Markdown note files live in the protected server-side `notes/` folder. They are not mounted as public static files.
+
+A sample file is included:
+
+```text
+notes/sample-photosynthesis.md
+```
+
+After logging in through the browser, fetch it at:
+
+```text
+http://127.0.0.1:8000/api/notes/sample-photosynthesis.md
+```
+
+The endpoint returns JSON with the note filename, markdown content, and active session code. Only `.md` files inside `notes/` are readable.
+
+To add your own notes on the KVM later, copy markdown files into the `notes/` folder, for example:
+
+```bash
+nano notes/my-lecture.md
+```
+
+Then read them at:
+
+```text
+/api/notes/my-lecture.md
+```
+
+## Phase 1E test checklist
+
+- Open `/` and confirm you are redirected to `/login` if not logged in.
 - Log in with your `ADMIN_PASSWORD`.
-- Confirm the presenter page loads after login.
-- Confirm the top-left badge shows a `Session` code.
-- Confirm the large teleprompter still appears across the bottom.
-- Click **Next** and **Previous** and confirm slides and teleprompter text change.
-- Open `/health` after login and confirm it returns JSON with `"status":"ok"` and a session code.
+- Confirm the presenter page still loads after login.
+- Confirm the top-left badge says `Phase 1E` and shows a `Session` code.
+- Confirm the teleprompter and Previous/Next controls still work.
+- Open `/api/notes/sample-photosynthesis.md` after login and confirm it returns JSON with markdown content.
+- Open `/api/notes/sample-photosynthesis.md` in a private/incognito window and confirm it requires login or returns `401`.
+- Try a missing note, such as `/api/notes/missing.md`, and confirm it returns `404`.
 - Click **Logout** and confirm `/` requires login again.
 
 ## Notes
 
-Markdown notes, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
+Start-lecture API, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.

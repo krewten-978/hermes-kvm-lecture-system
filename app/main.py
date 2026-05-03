@@ -2,6 +2,7 @@
 
 import os
 import secrets
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qs
 
@@ -12,14 +13,19 @@ from fastapi.staticfiles import StaticFiles
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 SESSION_COOKIE_NAME = "hermes_session_id"
+NOTES_DIR = Path("notes").resolve()
+
+# The configured password is hashed with bcrypt at startup. Login attempts are
+# checked against this hash; the plain password is never stored in a session.
 ADMIN_PASSWORD_HASH = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt())
 SESSIONS: dict[str, str] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.4.0",
+    version="0.5.0",
 )
+
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
@@ -41,6 +47,26 @@ def get_session_code(session_id: str | None) -> str | None:
     if not session_id:
         return None
     return SESSIONS.get(session_id)
+
+
+def login_required_redirect(session_id: str | None) -> str | RedirectResponse:
+    """Return the session code or redirect an unauthenticated browser."""
+    session_code = get_session_code(session_id)
+    if session_code:
+        return session_code
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def read_note_file(filename: str) -> str | None:
+    """Read a markdown note from the protected notes directory safely."""
+    requested_path = (NOTES_DIR / filename).resolve()
+
+    # Keep note reads inside NOTES_DIR and limit this phase to markdown files.
+    if NOTES_DIR not in requested_path.parents or requested_path.suffix.lower() != ".md":
+        return None
+    if not requested_path.is_file():
+        return None
+    return requested_path.read_text(encoding="utf-8")
 
 
 def login_page(error: str = "") -> str:
@@ -119,9 +145,10 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
     """Render the protected Phase 1D Reveal.js lecture page."""
-    session_code = get_session_code(hermes_session_id)
-    if not session_code:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    session_code_or_redirect = login_required_redirect(hermes_session_id)
+    if isinstance(session_code_or_redirect, RedirectResponse):
+        return session_code_or_redirect
+    session_code = session_code_or_redirect
 
     return HTMLResponse(f"""
     <!doctype html>
@@ -137,38 +164,63 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 1D • Session {session_code}
+          Hermes Lecture System • Phase 1E • Session {session_code}
         </div>
+
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
           <button type="submit" class="rounded-full border border-slate-500 bg-slate-950/80 px-4 py-2 text-sm font-bold uppercase tracking-[0.2em] text-slate-200 hover:bg-slate-800">Logout</button>
         </form>
+
         <div class="reveal lecture-stage">
           <div class="slides">
             <section data-notes="Welcome students. Today we are learning how plants make their own food. Start by emphasizing that photosynthesis is one of the most important processes for life on Earth." data-background-gradient="linear-gradient(135deg, #0f172a, #164e63)">
-              <h1>Photosynthesis</h1><p class="text-cyan-200">How plants turn light into food</p><p class="mt-8 text-3xl">Sample lecture powered by Reveal.js</p>
+              <h1>Photosynthesis</h1>
+              <p class="text-cyan-200">How plants turn light into food</p>
+              <p class="mt-8 text-3xl">Sample lecture powered by Reveal.js</p>
             </section>
             <section data-notes="The big idea is energy conversion. Plants capture light energy and store it as chemical energy in glucose. Keep this slide slow and clear.">
-              <h2>Big Idea</h2><p>Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen.</p><p class="mt-8 rounded-2xl bg-cyan-900/40 p-6 text-cyan-100">Light energy becomes chemical energy.</p>
+              <h2>Big Idea</h2>
+              <p>Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen.</p>
+              <p class="mt-8 rounded-2xl bg-cyan-900/40 p-6 text-cyan-100">Light energy becomes chemical energy.</p>
             </section>
             <section data-notes="Walk through the inputs one at a time. Sunlight is captured by chlorophyll, water enters through roots, and carbon dioxide enters through tiny openings in leaves.">
-              <h2>What Plants Need</h2><ul><li>Sunlight</li><li>Water from the roots</li><li>Carbon dioxide from the air</li><li>Chlorophyll inside chloroplasts</li></ul>
+              <h2>What Plants Need</h2>
+              <ul>
+                <li>Sunlight</li>
+                <li>Water from the roots</li>
+                <li>Carbon dioxide from the air</li>
+                <li>Chlorophyll inside chloroplasts</li>
+              </ul>
             </section>
             <section data-notes="Explain that glucose is useful to the plant as stored energy. Oxygen is released as a byproduct, but that byproduct is essential for animals and humans.">
-              <h2>The Products</h2><p>Plants produce:</p><ul><li><strong>Glucose</strong> — stored chemical energy</li><li><strong>Oxygen</strong> — released into the atmosphere</li></ul>
+              <h2>The Products</h2>
+              <p>Plants produce:</p>
+              <ul>
+                <li><strong>Glucose</strong> — stored chemical energy</li>
+                <li><strong>Oxygen</strong> — released into the atmosphere</li>
+              </ul>
             </section>
             <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
-              <h2>Why It Matters</h2><p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p><p class="mt-8 text-cyan-200">Next phase: protected markdown notes on the server.</p>
+              <h2>Why It Matters</h2>
+              <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
+              <p class="mt-8 text-cyan-200">Phase 1E: protected markdown notes are available on the server.</p>
             </section>
           </div>
         </div>
+
         <aside class="teleprompter" aria-label="Lecture teleprompter">
-          <div class="teleprompter__header"><span>Teleprompter</span><span id="slide-counter">Slide 1 of 5</span></div>
+          <div class="teleprompter__header">
+            <span>Teleprompter</span>
+            <span id="slide-counter">Slide 1 of 5</span>
+          </div>
           <p id="teleprompter-text" class="teleprompter__text">Welcome students. Today we are learning how plants make their own food.</p>
         </aside>
+
         <nav class="presenter-controls" aria-label="Presenter controls">
           <button id="previous-slide" class="presenter-button" type="button">← Previous</button>
           <button id="next-slide" class="presenter-button presenter-button--primary" type="button">Next →</button>
         </nav>
+
         <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
         <script src="/static/js/lecture.js"></script>
       </body>
@@ -192,3 +244,16 @@ def api_session(hermes_session_id: Annotated[str | None, Cookie()] = None) -> JS
     if not session_code:
         return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
     return JSONResponse({"session_code": session_code})
+
+@app.get("/api/notes/{filename:path}")
+def api_note(filename: str, hermes_session_id: Annotated[str | None, Cookie()] = None) -> JSONResponse:
+    """Protected endpoint for reading markdown notes stored on the KVM."""
+    session_code = get_session_code(hermes_session_id)
+    if not session_code:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    content = read_note_file(filename)
+    if content is None:
+        return JSONResponse({"detail": "Note not found"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    return JSONResponse({"filename": filename, "content": content, "session_code": session_code})
