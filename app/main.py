@@ -7,7 +7,7 @@ from typing import Annotated
 from urllib.parse import parse_qs
 
 import bcrypt
-from fastapi import Cookie, FastAPI, Request, status
+from fastapi import Cookie, FastAPI, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -20,11 +20,13 @@ NOTES_DIR = Path("notes").resolve()
 ADMIN_PASSWORD_HASH = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt())
 SESSIONS: dict[str, str] = {}
 LECTURE_SESSIONS: dict[str, dict[str, object]] = {}
+LECTURE_CONTROL_STATE: dict[str, bool] = {}
+WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.6.0",
+    version="0.7.0",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -68,6 +70,25 @@ def read_note_file(filename: str) -> str | None:
     if not requested_path.is_file():
         return None
     return requested_path.read_text(encoding="utf-8")
+
+
+async def broadcast_control_state(session_code: str) -> None:
+    """Broadcast the current pause/resume state to presenter WebSocket clients."""
+    paused = LECTURE_CONTROL_STATE.get(session_code, False)
+    message = {"type": "control_state", "paused": paused, "session_code": session_code}
+    active_connections = []
+
+    for websocket in WEBSOCKET_CONNECTIONS.get(session_code, []):
+        try:
+            await websocket.send_json(message)
+            active_connections.append(websocket)
+        except RuntimeError:
+            pass
+
+    if active_connections:
+        WEBSOCKET_CONNECTIONS[session_code] = active_connections
+    else:
+        WEBSOCKET_CONNECTIONS.pop(session_code, None)
 
 
 def login_page(error: str = "") -> str:
@@ -140,6 +161,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
         session_code = SESSIONS.pop(hermes_session_id, None)
         if session_code:
             LECTURE_SESSIONS.pop(session_code, None)
+            LECTURE_CONTROL_STATE.pop(session_code, None)
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE_NAME)
     return response
@@ -147,7 +169,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 1F Reveal.js lecture page."""
+    """Render the protected Phase 1G Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -167,7 +189,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 1F • Session {session_code}
+          Hermes Lecture System • Phase 1G • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -206,7 +228,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
             <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
               <h2>Why It Matters</h2>
               <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 1F: lecture payloads can now be started through the protected API.</p>
+              <p class="mt-8 text-cyan-200">Phase 1G: WebSocket pause and resume controls are connected.</p>
             </section>
           </div>
         </div>
@@ -219,7 +241,10 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
           <p id="teleprompter-text" class="teleprompter__text">Welcome students. Today we are learning how plants make their own food.</p>
         </aside>
 
+        <div id="lecture-status" class="lecture-status" aria-live="polite">Live</div>
+
         <nav class="presenter-controls" aria-label="Presenter controls">
+          <button id="pause-resume-lecture" class="presenter-button presenter-button--pause" type="button">Pause Lecture</button>
           <button id="previous-slide" class="presenter-button" type="button">← Previous</button>
           <button id="next-slide" class="presenter-button presenter-button--primary" type="button">Next →</button>
         </nav>
@@ -247,6 +272,53 @@ def api_session(hermes_session_id: Annotated[str | None, Cookie()] = None) -> JS
     if not session_code:
         return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
     return JSONResponse({"session_code": session_code})
+
+
+@app.websocket("/ws/session")
+async def websocket_session(websocket: WebSocket) -> None:
+    """Authenticated presenter WebSocket for pause/resume control state."""
+    session_id = websocket.cookies.get(SESSION_COOKIE_NAME)
+    session_code = get_session_code(session_id)
+    if not session_code:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    WEBSOCKET_CONNECTIONS.setdefault(session_code, []).append(websocket)
+    await websocket.send_json(
+        {
+            "type": "control_state",
+            "paused": LECTURE_CONTROL_STATE.get(session_code, False),
+            "session_code": session_code,
+        }
+    )
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            command = message.get("command") if isinstance(message, dict) else None
+
+            if command == "pause":
+                LECTURE_CONTROL_STATE[session_code] = True
+                await broadcast_control_state(session_code)
+            elif command == "resume":
+                LECTURE_CONTROL_STATE[session_code] = False
+                await broadcast_control_state(session_code)
+            elif command == "toggle":
+                LECTURE_CONTROL_STATE[session_code] = not LECTURE_CONTROL_STATE.get(session_code, False)
+                await broadcast_control_state(session_code)
+            else:
+                await websocket.send_json({"type": "error", "detail": "Unknown command"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        connections = WEBSOCKET_CONNECTIONS.get(session_code, [])
+        if websocket in connections:
+            connections.remove(websocket)
+        if connections:
+            WEBSOCKET_CONNECTIONS[session_code] = connections
+        else:
+            WEBSOCKET_CONNECTIONS.pop(session_code, None)
 
 
 @app.post("/api/start-lecture")
