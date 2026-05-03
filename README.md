@@ -2,19 +2,38 @@
 
 A minimal FastAPI starter for the Hermes-controlled classroom lecture presenter.
 
-## Phase 1C status
+## Phase 1D status
 
-Phase 1C provides:
+Phase 1D provides:
 
 - Basic FastAPI application
 - Static files folder mounted at `/static`
 - Tailwind CSS loaded on the presenter page
-- Reveal.js loaded from CDN
-- `/` page displaying a hardcoded 5-slide sample lecture about photosynthesis
-- Large, high-contrast teleprompter panel fixed to the bottom of the page
-- Manual **Previous** and **Next** presenter buttons
-- Teleprompter text that updates as slides change
-- `/health` endpoint for quick deployment checks
+- Reveal.js sample lecture with teleprompter and manual Previous/Next controls
+- Admin login form protected by configurable `ADMIN_PASSWORD`
+- Bcrypt password hashing at application startup
+- HTTP-only browser session cookie after login
+- Unique `SESSION_CODE` for each authenticated session
+- Protected `/` page
+- Protected `/health` endpoint
+- Protected `/api/session` endpoint
+- Logout button
+
+## Configure the admin password
+
+Set `ADMIN_PASSWORD` before starting the server. Example:
+
+```bash
+export ADMIN_PASSWORD='choose-a-long-private-password'
+```
+
+If `ADMIN_PASSWORD` is not set, the development fallback password is:
+
+```text
+change-me
+```
+
+Do not use the fallback password on the KVM or any network-exposed deployment.
 
 ## Local / KVM setup
 
@@ -37,13 +56,17 @@ pip install -r requirements.txt
 
 ## Run with uvicorn
 
+For KVM testing:
+
 ```bash
+export ADMIN_PASSWORD='choose-a-long-private-password'
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-For laptop-only testing, this is also fine:
+For laptop-only testing:
 
 ```bash
+export ADMIN_PASSWORD='test-password'
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -53,15 +76,17 @@ Then open:
 - Laptop presenter page: `http://127.0.0.1:8000/`
 - Health check: `http://YOUR_SERVER_IP:8000/health`
 
-## Phase 1C test checklist
+## Phase 1D test checklist
 
-- Confirm the page opens as a full-screen Reveal.js slide deck.
-- Confirm the first slide says `Photosynthesis`.
-- Confirm the large teleprompter appears across the bottom of the page.
-- Click **Next** and **Previous** and confirm the slides change.
-- Confirm the teleprompter text changes with each slide.
-- Confirm keyboard arrow navigation still works.
+- Open `/` and confirm you are redirected to `/login`.
+- Log in with your `ADMIN_PASSWORD`.
+- Confirm the presenter page loads after login.
+- Confirm the top-left badge shows a `Session` code.
+- Confirm the large teleprompter still appears across the bottom.
+- Click **Next** and **Previous** and confirm slides and teleprompter text change.
+- Open `/health` after login and confirm it returns JSON with `"status":"ok"` and a session code.
+- Click **Logout** and confirm `/` requires login again.
 
 ## Notes
 
-Security, markdown notes, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
+Markdown notes, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
