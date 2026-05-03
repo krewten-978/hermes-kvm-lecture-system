@@ -1,4 +1,4 @@
-"""Phase 1A FastAPI application for the Hermes KVM Lecture System."""
+"""FastAPI application for the Hermes KVM Lecture System."""
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -15,7 +15,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
-    """Render the Phase 1A readiness page."""
+    """Render a hardcoded sample Reveal.js lecture for Phase 1B."""
     return """
     <!doctype html>
     <html lang="en">
@@ -24,18 +24,58 @@ def home() -> str:
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Hermes KVM Lecture System</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
         <link rel="stylesheet" href="/static/css/site.css" />
       </head>
-      <body class="min-h-screen bg-slate-950 text-white">
-        <main class="flex min-h-screen items-center justify-center px-6">
-          <section class="max-w-3xl rounded-3xl border border-cyan-400/30 bg-slate-900/80 p-10 text-center shadow-2xl shadow-cyan-950/50">
-            <p class="mb-4 text-sm font-semibold uppercase tracking-[0.35em] text-cyan-300">Phase 1A</p>
-            <h1 class="mb-6 text-5xl font-black tracking-tight md:text-7xl">Hermes Lecture System ready</h1>
-            <p class="text-xl leading-relaxed text-slate-300">
-              FastAPI is running, static files are mounted, and Tailwind CSS is available for the classroom presenter interface.
-            </p>
-          </section>
-        </main>
+      <body class="bg-slate-950 text-white">
+        <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
+          Hermes Lecture System • Phase 1B
+        </div>
+
+        <div class="reveal">
+          <div class="slides">
+            <section data-background-gradient="linear-gradient(135deg, #0f172a, #164e63)">
+              <h1>Photosynthesis</h1>
+              <p class="text-cyan-200">How plants turn light into food</p>
+              <p class="mt-8 text-3xl">Sample lecture powered by Reveal.js</p>
+            </section>
+
+            <section>
+              <h2>Big Idea</h2>
+              <p>Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen.</p>
+              <p class="mt-8 rounded-2xl bg-cyan-900/40 p-6 text-cyan-100">Light energy becomes chemical energy.</p>
+            </section>
+
+            <section>
+              <h2>What Plants Need</h2>
+              <ul>
+                <li>Sunlight</li>
+                <li>Water from the roots</li>
+                <li>Carbon dioxide from the air</li>
+                <li>Chlorophyll inside chloroplasts</li>
+              </ul>
+            </section>
+
+            <section>
+              <h2>The Products</h2>
+              <p>Plants produce:</p>
+              <ul>
+                <li><strong>Glucose</strong> — stored chemical energy</li>
+                <li><strong>Oxygen</strong> — released into the atmosphere</li>
+              </ul>
+            </section>
+
+            <section>
+              <h2>Why It Matters</h2>
+              <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
+              <p class="mt-8 text-cyan-200">Next phase: a large teleprompter and manual presenter controls.</p>
+            </section>
+          </div>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+        <script src="/static/js/lecture.js"></script>
       </body>
     </html>
     """
