@@ -2,9 +2,9 @@
 
 A minimal FastAPI starter for the Hermes-controlled classroom lecture presenter.
 
-## Phase 1F status
+## Phase 1G status
 
-Phase 1F provides:
+Phase 1G provides:
 
 - Basic FastAPI application
 - Static files folder mounted at `/static`
@@ -21,6 +21,9 @@ Phase 1F provides:
 - Protected `GET /api/notes/{filename}` endpoint for markdown notes
 - Protected `POST /api/start-lecture` endpoint for accepting `title`, `slides`, and `narration`
 - In-memory lecture session storage keyed to the current `SESSION_CODE`
+- Protected WebSocket endpoint at `/ws/session` for presenter control state
+- Prominent on-screen Pause / Resume button wired through WebSockets
+- Live/Paused status badge on the presenter page
 - Logout button
 
 ## Configure the admin password
@@ -131,19 +134,32 @@ The response includes the presenter `url`, active `session_code`, accepted `titl
 
 For now, lecture payloads are stored in memory only. Restarting the server or logging out clears them.
 
-## Phase 1F test checklist
+## Presenter pause/resume control
+
+The protected presenter page opens an authenticated WebSocket connection to:
+
+```text
+/ws/session
+```
+
+The on-screen **Pause Lecture** button sends a WebSocket control message and changes the presenter state to **Paused**. The same button then becomes **Resume Lecture** and can switch the state back to **Live**. The status badge near the bottom-left of the presenter shows the current state.
+
+This phase adds the WebSocket foundation that later Telegram controls can use. Telegram command handling is still intentionally left for a later phase.
+
+## Phase 1G test checklist
 
 - Open `/` and confirm you are redirected to `/login` if not logged in.
 - Log in with your `ADMIN_PASSWORD`.
 - Confirm the presenter page still loads after login.
-- Confirm the top-left badge says `Phase 1F` and shows a `Session` code.
+- Confirm the top-left badge says `Phase 1G` and shows a `Session` code.
 - Confirm the teleprompter and Previous/Next controls still work.
+- Confirm a **Live** status badge appears near the bottom-left.
+- Click **Pause Lecture** and confirm the button changes to **Resume Lecture** and the status badge changes to **Paused**.
+- Click **Resume Lecture** and confirm the button changes back to **Pause Lecture** and the status badge changes back to **Live**.
 - Open `/api/notes/sample-photosynthesis.md` after login and confirm it still returns JSON with markdown content.
-- Send a logged-in `POST /api/start-lecture` request with `title`, `slides`, and `narration`; confirm it returns JSON with `url`, `session_code`, `title`, and `slide_count`.
-- Send the same `POST /api/start-lecture` request without login cookies, or in a private/incognito context, and confirm it returns `401`.
-- Send a malformed `POST /api/start-lecture` request missing `title`, `slides`, or `narration` and confirm it returns `400`.
+- Send a logged-in `POST /api/start-lecture` request with `title`, `slides`, and `narration`; confirm it still returns JSON with `url`, `session_code`, `title`, and `slide_count`.
 - Click **Logout** and confirm `/` requires login again.
 
 ## Notes
 
-WebSockets, Telegram controls, and rendering dynamic lecture payloads in the presenter are intentionally left for later phases per the phased development plan.
+Telegram controls and rendering dynamic lecture payloads in the presenter are intentionally left for later phases per the phased development plan.
