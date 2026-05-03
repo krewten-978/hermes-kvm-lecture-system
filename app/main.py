@@ -19,11 +19,12 @@ NOTES_DIR = Path("notes").resolve()
 # checked against this hash; the plain password is never stored in a session.
 ADMIN_PASSWORD_HASH = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt())
 SESSIONS: dict[str, str] = {}
+LECTURE_SESSIONS: dict[str, dict[str, object]] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -136,7 +137,9 @@ async def login(request: Request):
 def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> RedirectResponse:
     """End the current authenticated session."""
     if hermes_session_id:
-        SESSIONS.pop(hermes_session_id, None)
+        session_code = SESSIONS.pop(hermes_session_id, None)
+        if session_code:
+            LECTURE_SESSIONS.pop(session_code, None)
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE_NAME)
     return response
@@ -144,7 +147,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 1D Reveal.js lecture page."""
+    """Render the protected Phase 1F Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -164,7 +167,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 1E • Session {session_code}
+          Hermes Lecture System • Phase 1F • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -203,7 +206,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
             <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
               <h2>Why It Matters</h2>
               <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 1E: protected markdown notes are available on the server.</p>
+              <p class="mt-8 text-cyan-200">Phase 1F: lecture payloads can now be started through the protected API.</p>
             </section>
           </div>
         </div>
@@ -244,6 +247,50 @@ def api_session(hermes_session_id: Annotated[str | None, Cookie()] = None) -> JS
     if not session_code:
         return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
     return JSONResponse({"session_code": session_code})
+
+
+@app.post("/api/start-lecture")
+async def start_lecture(request: Request, hermes_session_id: Annotated[str | None, Cookie()] = None) -> JSONResponse:
+    """Protected endpoint for storing a lecture payload in memory for this session."""
+    session_code = get_session_code(hermes_session_id)
+    if not session_code:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Expected JSON body"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not isinstance(payload, dict):
+        return JSONResponse({"detail": "Expected JSON object"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    title = payload.get("title")
+    slides = payload.get("slides")
+    narration = payload.get("narration")
+
+    if not isinstance(title, str) or not title.strip():
+        return JSONResponse({"detail": "Field 'title' must be a non-empty string"}, status_code=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(slides, list) or not slides:
+        return JSONResponse({"detail": "Field 'slides' must be a non-empty list"}, status_code=status.HTTP_400_BAD_REQUEST)
+    if narration is None:
+        return JSONResponse({"detail": "Field 'narration' is required"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    lecture = {
+        "title": title.strip(),
+        "slides": slides,
+        "narration": narration,
+    }
+    LECTURE_SESSIONS[session_code] = lecture
+
+    return JSONResponse(
+        {
+            "url": str(request.url_for("home")),
+            "session_code": session_code,
+            "title": lecture["title"],
+            "slide_count": len(slides),
+        }
+    )
+
 
 @app.get("/api/notes/{filename:path}")
 def api_note(filename: str, hermes_session_id: Annotated[str | None, Cookie()] = None) -> JSONResponse:

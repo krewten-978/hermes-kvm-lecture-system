@@ -2,9 +2,9 @@
 
 A minimal FastAPI starter for the Hermes-controlled classroom lecture presenter.
 
-## Phase 1E status
+## Phase 1F status
 
-Phase 1E provides:
+Phase 1F provides:
 
 - Basic FastAPI application
 - Static files folder mounted at `/static`
@@ -19,6 +19,8 @@ Phase 1E provides:
 - Protected `/api/session` endpoint
 - Protected `notes/` folder on the server
 - Protected `GET /api/notes/{filename}` endpoint for markdown notes
+- Protected `POST /api/start-lecture` endpoint for accepting `title`, `slides`, and `narration`
+- In-memory lecture session storage keyed to the current `SESSION_CODE`
 - Logout button
 
 ## Configure the admin password
@@ -108,18 +110,40 @@ Then read them at:
 /api/notes/my-lecture.md
 ```
 
-## Phase 1E test checklist
+## Start a lecture through the API
+
+After logging in, `POST /api/start-lecture` accepts JSON with `title`, `slides`, and `narration`. The lecture payload is stored in memory for the authenticated browser session's `SESSION_CODE`.
+
+Example using curl after saving login cookies:
+
+```bash
+curl -i -c /tmp/lecture-cookies.txt \
+  -d 'password=your-admin-password' \
+  http://127.0.0.1:8000/login
+
+curl -s -b /tmp/lecture-cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Cell Energy","slides":[{"heading":"ATP","body":"Cells store usable energy in ATP."}],"narration":["Introduce ATP as the cell energy molecule."]}' \
+  http://127.0.0.1:8000/api/start-lecture
+```
+
+The response includes the presenter `url`, active `session_code`, accepted `title`, and `slide_count`.
+
+For now, lecture payloads are stored in memory only. Restarting the server or logging out clears them.
+
+## Phase 1F test checklist
 
 - Open `/` and confirm you are redirected to `/login` if not logged in.
 - Log in with your `ADMIN_PASSWORD`.
 - Confirm the presenter page still loads after login.
-- Confirm the top-left badge says `Phase 1E` and shows a `Session` code.
+- Confirm the top-left badge says `Phase 1F` and shows a `Session` code.
 - Confirm the teleprompter and Previous/Next controls still work.
-- Open `/api/notes/sample-photosynthesis.md` after login and confirm it returns JSON with markdown content.
-- Open `/api/notes/sample-photosynthesis.md` in a private/incognito window and confirm it requires login or returns `401`.
-- Try a missing note, such as `/api/notes/missing.md`, and confirm it returns `404`.
+- Open `/api/notes/sample-photosynthesis.md` after login and confirm it still returns JSON with markdown content.
+- Send a logged-in `POST /api/start-lecture` request with `title`, `slides`, and `narration`; confirm it returns JSON with `url`, `session_code`, `title`, and `slide_count`.
+- Send the same `POST /api/start-lecture` request without login cookies, or in a private/incognito context, and confirm it returns `401`.
+- Send a malformed `POST /api/start-lecture` request missing `title`, `slides`, or `narration` and confirm it returns `400`.
 - Click **Logout** and confirm `/` requires login again.
 
 ## Notes
 
-Start-lecture API, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
+WebSockets, Telegram controls, and rendering dynamic lecture payloads in the presenter are intentionally left for later phases per the phased development plan.
