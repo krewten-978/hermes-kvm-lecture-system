@@ -1,4 +1,4 @@
-// Phase 1G: initialize Reveal.js, presenter controls, and WebSocket pause/resume state.
+// Phase 1H: initialize Reveal.js, presenter controls, and WebSocket/Telegram pause/resume state.
 Reveal.initialize({
   hash: true,
   controls: true,
@@ -36,12 +36,21 @@ function updatePresenterPanel() {
   nextButton.disabled = currentIndex >= slides.length - 1;
 }
 
-function renderLectureState(paused) {
+function renderLectureState(paused, state = "ready") {
   lecturePaused = paused;
   document.body.classList.toggle("lecture-paused", lecturePaused);
   pauseResumeButton.textContent = lecturePaused ? "Resume Lecture" : "Pause Lecture";
   pauseResumeButton.setAttribute("aria-pressed", lecturePaused ? "true" : "false");
-  lectureStatus.textContent = lecturePaused ? "Paused" : "Live";
+
+  if (state === "ended") {
+    lectureStatus.textContent = "Ended";
+  } else if (lecturePaused) {
+    lectureStatus.textContent = "Paused";
+  } else if (state === "running") {
+    lectureStatus.textContent = "Running";
+  } else {
+    lectureStatus.textContent = "Live";
+  }
 }
 
 function connectControlSocket() {
@@ -56,7 +65,7 @@ function connectControlSocket() {
   controlSocket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "control_state") {
-      renderLectureState(Boolean(message.paused));
+      renderLectureState(Boolean(message.paused), message.state || "ready");
     }
   });
 
