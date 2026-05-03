@@ -2,16 +2,18 @@
 
 A minimal FastAPI starter for the Hermes-controlled classroom lecture presenter.
 
-## Phase 1B status
+## Phase 1C status
 
-Phase 1B provides:
+Phase 1C provides:
 
 - Basic FastAPI application
 - Static files folder mounted at `/static`
 - Tailwind CSS loaded on the presenter page
 - Reveal.js loaded from CDN
 - `/` page displaying a hardcoded 5-slide sample lecture about photosynthesis
-- Built-in Reveal.js keyboard/navigation controls
+- Large, high-contrast teleprompter panel fixed to the bottom of the page
+- Manual **Previous** and **Next** presenter buttons
+- Teleprompter text that updates as slides change
 - `/health` endpoint for quick deployment checks
 
 ## Local / KVM setup
@@ -24,7 +26,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-If you already cloned Phase 1A, update instead:
+If you already cloned an earlier phase, update instead:
 
 ```bash
 cd hermes-kvm-lecture-system
@@ -51,13 +53,15 @@ Then open:
 - Laptop presenter page: `http://127.0.0.1:8000/`
 - Health check: `http://YOUR_SERVER_IP:8000/health`
 
-## Phase 1B test checklist
+## Phase 1C test checklist
 
 - Confirm the page opens as a full-screen Reveal.js slide deck.
 - Confirm the first slide says `Photosynthesis`.
-- Use keyboard arrow keys or on-screen controls to move through all 5 slides.
-- Confirm there is no teleprompter yet; that is reserved for Phase 1C.
+- Confirm the large teleprompter appears across the bottom of the page.
+- Click **Next** and **Previous** and confirm the slides change.
+- Confirm the teleprompter text changes with each slide.
+- Confirm keyboard arrow navigation still works.
 
 ## Notes
 
-Security, teleprompter, notes, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
+Security, markdown notes, WebSockets, and Telegram controls are intentionally left for later phases per the phased development plan.
