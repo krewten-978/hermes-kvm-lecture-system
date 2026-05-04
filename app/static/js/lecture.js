@@ -1,4 +1,4 @@
-// Phase 1H: initialize Reveal.js, presenter controls, and WebSocket/Telegram pause/resume state.
+// Phase 1I: initialize Reveal.js, presenter controls, and WebSocket/Telegram pause/resume state.
 Reveal.initialize({
   hash: true,
   controls: true,

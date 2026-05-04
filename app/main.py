@@ -28,7 +28,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.8.0",
+    version="0.9.0",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -323,7 +323,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 1H Reveal.js lecture page."""
+    """Render the protected Phase 1I Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -343,7 +343,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 1H • Session {session_code}
+          Hermes Lecture System • Phase 1I • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -382,7 +382,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
             <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
               <h2>Why It Matters</h2>
               <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 1H: Telegram commands can start, begin, pause, resume, and end lectures.</p>
+              <p class="mt-8 text-cyan-200">Phase 1I: Deployment-ready controls, notes, Telegram commands, and documentation are complete.</p>
             </section>
           </div>
         </div>
@@ -559,3 +559,4 @@ def api_note(filename: str, hermes_session_id: Annotated[str | None, Cookie()] =
         return JSONResponse({"detail": "Note not found"}, status_code=status.HTTP_404_NOT_FOUND)
 
     return JSONResponse({"filename": filename, "content": content, "session_code": session_code})
+
