@@ -13,6 +13,8 @@ Phase 1I is the final polish/documentation phase for the Phase 1 build. The appl
 - Large bottom teleprompter panel
 - Previous / Next presenter buttons
 - Prominent Pause / Resume button
+- Autonomous slide advancement after `Begin lecture` with a configurable pace (`LECTURE_SLIDE_SECONDS`, default 75 seconds)
+- WebSocket `slide_advance` events that keep the presenter slides and teleprompter synchronized
 - Presenter status badge: Live, Running, Paused, Ended, or disconnected
 - Configurable admin password with bcrypt hashing
 - Login form and HTTP-only session cookie
@@ -81,6 +83,12 @@ Set a separate Telegram/direct-command secret before starting the server:
 export TELEGRAM_WEBHOOK_SECRET='choose-a-second-long-private-secret'
 ```
 
+Optionally set the autonomous slide pace before starting the server. The default is 75 seconds, which is inside the intended 60-90 second natural classroom pace:
+
+```bash
+export LECTURE_SLIDE_SECONDS='75'
+```
+
 Use two different values. Do not reuse the admin password as the Telegram command secret.
 
 If `ADMIN_PASSWORD` is not set, the development fallback password is:
@@ -104,6 +112,7 @@ cd hermes-kvm-lecture-system
 source .venv/bin/activate
 export ADMIN_PASSWORD='test-password'
 export TELEGRAM_WEBHOOK_SECRET='test-telegram-secret'
+export LECTURE_SLIDE_SECONDS='75'
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -122,6 +131,7 @@ cd hermes-kvm-lecture-system
 source .venv/bin/activate
 export ADMIN_PASSWORD='test-password'
 export TELEGRAM_WEBHOOK_SECRET='test-telegram-secret'
+export LECTURE_SLIDE_SECONDS='75'
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -168,6 +178,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 export ADMIN_PASSWORD='choose-a-long-private-password'
 export TELEGRAM_WEBHOOK_SECRET='choose-a-second-long-private-secret'
+export LECTURE_SLIDE_SECONDS='75'
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -312,6 +323,8 @@ curl -s -X POST http://YOUR_SERVER_IP:8000/api/telegram-command \
   -d '{"text":"Begin lecture"}'
 ```
 
+Expected behavior: the presenter status changes to `Running`, and the server begins broadcasting autonomous slide advances over `/ws/session`. With the default setting, the current five-slide presenter deck advances every 75 seconds. To test faster, restart uvicorn with a shorter temporary value such as `export LECTURE_SLIDE_SECONDS='5'`.
+
 Pause:
 
 ```bash
@@ -390,8 +403,9 @@ It receives control state broadcasts from:
 
 - On-screen Pause / Resume button
 - `/api/telegram-command` begin, pause, resume, and end commands
+- The server-side autonomous slide-advance task started by `Begin lecture`
 
-The status badge updates to show Live, Running, Paused, Ended, or disconnected.
+The status badge updates to show Live, Running, Paused, Ended, or disconnected. While Running, the browser applies `slide_advance` messages from the server to move Reveal.js to the next slide and refresh/scroll the teleprompter. Pause stops advancing; Resume restarts it; End cancels the autonomous task.
 
 ## Health and session checks
 
@@ -485,7 +499,9 @@ After deploying Phase 1I:
 - Use curl to send `Start lecture on Cell Energy using notes/sample-photosynthesis.md` to `/api/telegram-command`.
 - Confirm the response includes `ok: true`, a presenter URL, a session code, and `state: ready`.
 - Send `Begin lecture` and confirm the presenter status changes to Running.
-- Send `Pause lecture` and confirm the presenter status changes to Paused.
+- Wait for the configured interval and confirm the presenter automatically moves to the next slide without pressing Next.
+- Confirm the teleprompter updates to the current slide's notes and slowly scrolls while Running.
+- Send `Pause lecture` and confirm the presenter status changes to Paused and slide movement stops.
 - Send `Resume lecture` and confirm the presenter status changes back to Running.
 - Send `End lecture` and confirm the presenter status changes to Ended.
 - Log out and confirm `/` requires login again.

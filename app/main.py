@@ -1,5 +1,7 @@
 """FastAPI application for the Hermes KVM Lecture System."""
 
+import asyncio
+import contextlib
 import os
 import secrets
 from pathlib import Path
@@ -13,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+LECTURE_SLIDE_SECONDS = float(os.getenv("LECTURE_SLIDE_SECONDS", "75"))
+PRESENTER_SLIDE_COUNT = 5
 SESSION_COOKIE_NAME = "hermes_session_id"
 NOTES_DIR = Path("notes").resolve()
 
@@ -23,12 +27,14 @@ SESSIONS: dict[str, str] = {}
 LECTURE_SESSIONS: dict[str, dict[str, object]] = {}
 LECTURE_CONTROL_STATE: dict[str, bool] = {}
 LECTURE_RUNTIME_STATE: dict[str, str] = {}
+LECTURE_SLIDE_INDEX: dict[str, int] = {}
+LECTURE_AUTONOMOUS_TASKS: dict[str, asyncio.Task[None]] = {}
 WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.0",
+    version="0.9.1",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -149,6 +155,69 @@ def parse_telegram_payload(payload: object) -> tuple[str, int | str | None, str 
     return "", None, None
 
 
+def get_slide_count(session_code: str) -> int:
+    """Return how many slides the current presenter page can advance through."""
+    return PRESENTER_SLIDE_COUNT
+
+
+def build_control_message(session_code: str, message_type: str = "control_state") -> dict[str, object]:
+    """Build the WebSocket state payload shared by controls and autonomous mode."""
+    return {
+        "type": message_type,
+        "paused": LECTURE_CONTROL_STATE.get(session_code, False),
+        "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"),
+        "session_code": session_code,
+        "slide_index": LECTURE_SLIDE_INDEX.get(session_code, 0),
+        "slide_count": get_slide_count(session_code),
+        "slide_seconds": LECTURE_SLIDE_SECONDS,
+    }
+
+
+def start_autonomous_lecture(session_code: str) -> None:
+    """Ensure exactly one autonomous slide-advance task is running for a session."""
+    existing_task = LECTURE_AUTONOMOUS_TASKS.get(session_code)
+    if existing_task and not existing_task.done():
+        return
+    LECTURE_AUTONOMOUS_TASKS[session_code] = asyncio.create_task(auto_advance_lecture(session_code))
+
+
+async def stop_autonomous_lecture(session_code: str) -> None:
+    """Cancel the autonomous task for a session if it is running."""
+    task = LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
+    if task and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def auto_advance_lecture(session_code: str) -> None:
+    """Advance presenter slides while a lecture is running and not paused."""
+    LECTURE_AUTONOMOUS_TASKS[session_code] = asyncio.current_task()  # type: ignore[assignment]
+
+    while LECTURE_RUNTIME_STATE.get(session_code) == "running":
+        await asyncio.sleep(max(LECTURE_SLIDE_SECONDS, 0.01))
+
+        if LECTURE_RUNTIME_STATE.get(session_code) != "running":
+            break
+        if LECTURE_CONTROL_STATE.get(session_code, False):
+            continue
+
+        current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
+        slide_count = get_slide_count(session_code)
+        if current_index >= slide_count - 1:
+            LECTURE_RUNTIME_STATE[session_code] = "ended"
+            LECTURE_CONTROL_STATE[session_code] = True
+            await broadcast_control_state(session_code)
+            break
+
+        LECTURE_SLIDE_INDEX[session_code] = current_index + 1
+        await broadcast_control_state(session_code, message_type="slide_advance")
+
+    task = LECTURE_AUTONOMOUS_TASKS.get(session_code)
+    if task is asyncio.current_task():
+        LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
+
+
 async def apply_telegram_command(command_text: str, request: Request, requested_session_code: str | None = None) -> dict[str, object]:
     """Apply a Telegram lecture command and return a reply payload."""
     normalized = " ".join(command_text.lower().strip().split())
@@ -183,6 +252,8 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
         }
         LECTURE_RUNTIME_STATE[session_code] = "ready"
         LECTURE_CONTROL_STATE[session_code] = False
+        LECTURE_SLIDE_INDEX[session_code] = 0
+        await stop_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         note_line = f" using notes/{note_filename}" if note_filename and note_content else ""
         missing_note_line = f"\nNote file notes/{note_filename} was not found, so I created a basic lecture shell." if note_filename and not note_content else ""
@@ -197,8 +268,10 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
     if normalized in {"begin lecture", "/begin", "begin"}:
         LECTURE_RUNTIME_STATE[session_code] = "running"
         LECTURE_CONTROL_STATE[session_code] = False
+        LECTURE_SLIDE_INDEX[session_code] = 0
+        start_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
-        return {"ok": True, "reply": f"Lecture begun. Presenter: {presenter_url}", "url": presenter_url, "session_code": session_code, "state": "running"}
+        return {"ok": True, "reply": f"Lecture begun. Autonomous slide advance is running every {LECTURE_SLIDE_SECONDS:g} seconds. Presenter: {presenter_url}", "url": presenter_url, "session_code": session_code, "state": "running", "slide_seconds": LECTURE_SLIDE_SECONDS}
 
     if normalized in {"pause lecture", "/pause", "pause"}:
         LECTURE_CONTROL_STATE[session_code] = True
@@ -208,27 +281,23 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
     if normalized in {"resume lecture", "/resume", "resume"}:
         LECTURE_RUNTIME_STATE[session_code] = "running"
         LECTURE_CONTROL_STATE[session_code] = False
+        start_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
-        return {"ok": True, "reply": "Lecture resumed.", "session_code": session_code, "state": "running", "paused": False}
+        return {"ok": True, "reply": "Lecture resumed. Autonomous slide advance is running.", "session_code": session_code, "state": "running", "paused": False, "slide_seconds": LECTURE_SLIDE_SECONDS}
 
     if normalized in {"end lecture", "/end", "end"}:
         LECTURE_RUNTIME_STATE[session_code] = "ended"
         LECTURE_CONTROL_STATE[session_code] = True
+        await stop_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         return {"ok": True, "reply": "Lecture ended.", "session_code": session_code, "state": "ended", "paused": True}
 
     return {"ok": False, "reply": "I did not recognize that command.\n\n" + build_help_message(), "session_code": session_code, "url": presenter_url}
 
 
-async def broadcast_control_state(session_code: str) -> None:
-    """Broadcast the current pause/resume state to presenter WebSocket clients."""
-    paused = LECTURE_CONTROL_STATE.get(session_code, False)
-    message = {
-        "type": "control_state",
-        "paused": paused,
-        "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"),
-        "session_code": session_code,
-    }
+async def broadcast_control_state(session_code: str, message_type: str = "control_state") -> None:
+    """Broadcast current lecture state to presenter WebSocket clients."""
+    message = build_control_message(session_code, message_type=message_type)
     active_connections = []
 
     for websocket in WEBSOCKET_CONNECTIONS.get(session_code, []):
@@ -316,6 +385,10 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
             LECTURE_SESSIONS.pop(session_code, None)
             LECTURE_CONTROL_STATE.pop(session_code, None)
             LECTURE_RUNTIME_STATE.pop(session_code, None)
+            LECTURE_SLIDE_INDEX.pop(session_code, None)
+            task = LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
+            if task and not task.done():
+                task.cancel()
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE_NAME)
     return response
@@ -439,14 +512,7 @@ async def websocket_session(websocket: WebSocket) -> None:
 
     await websocket.accept()
     WEBSOCKET_CONNECTIONS.setdefault(session_code, []).append(websocket)
-    await websocket.send_json(
-        {
-            "type": "control_state",
-            "paused": LECTURE_CONTROL_STATE.get(session_code, False),
-            "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"),
-            "session_code": session_code,
-        }
-    )
+    await websocket.send_json(build_control_message(session_code))
 
     try:
         while True:
@@ -459,9 +525,13 @@ async def websocket_session(websocket: WebSocket) -> None:
             elif command == "resume":
                 LECTURE_RUNTIME_STATE[session_code] = "running"
                 LECTURE_CONTROL_STATE[session_code] = False
+                start_autonomous_lecture(session_code)
                 await broadcast_control_state(session_code)
             elif command == "toggle":
                 LECTURE_CONTROL_STATE[session_code] = not LECTURE_CONTROL_STATE.get(session_code, False)
+                if not LECTURE_CONTROL_STATE[session_code]:
+                    LECTURE_RUNTIME_STATE[session_code] = "running"
+                    start_autonomous_lecture(session_code)
                 await broadcast_control_state(session_code)
             else:
                 await websocket.send_json({"type": "error", "detail": "Unknown command"})
@@ -536,6 +606,11 @@ async def start_lecture(request: Request, hermes_session_id: Annotated[str | Non
         "narration": narration,
     }
     LECTURE_SESSIONS[session_code] = lecture
+    LECTURE_RUNTIME_STATE[session_code] = "ready"
+    LECTURE_CONTROL_STATE[session_code] = False
+    LECTURE_SLIDE_INDEX[session_code] = 0
+    await stop_autonomous_lecture(session_code)
+    await broadcast_control_state(session_code)
 
     return JSONResponse(
         {

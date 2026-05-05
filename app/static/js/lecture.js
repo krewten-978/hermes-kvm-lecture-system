@@ -16,7 +16,9 @@ const pauseResumeButton = document.getElementById("pause-resume-lecture");
 const lectureStatus = document.getElementById("lecture-status");
 
 let lecturePaused = false;
+let lectureState = "ready";
 let controlSocket = null;
+let teleprompterScrollTimer = null;
 
 function getSlides() {
   return Array.from(document.querySelectorAll(".reveal .slides > section"));
@@ -34,10 +36,31 @@ function updatePresenterPanel() {
 
   previousButton.disabled = currentIndex <= 0;
   nextButton.disabled = currentIndex >= slides.length - 1;
+  syncTeleprompterScroll();
+}
+
+function syncTeleprompterScroll() {
+  if (teleprompterScrollTimer) {
+    window.clearInterval(teleprompterScrollTimer);
+    teleprompterScrollTimer = null;
+  }
+
+  if (lectureState !== "running" || lecturePaused) {
+    return;
+  }
+
+  teleprompterScrollTimer = window.setInterval(() => {
+    const maxScroll = teleprompterText.scrollHeight - teleprompterText.clientHeight;
+    if (maxScroll <= 0 || teleprompterText.scrollTop >= maxScroll) {
+      return;
+    }
+    teleprompterText.scrollTop += 1;
+  }, 120);
 }
 
 function renderLectureState(paused, state = "ready") {
   lecturePaused = paused;
+  lectureState = state;
   document.body.classList.toggle("lecture-paused", lecturePaused);
   pauseResumeButton.textContent = lecturePaused ? "Resume Lecture" : "Pause Lecture";
   pauseResumeButton.setAttribute("aria-pressed", lecturePaused ? "true" : "false");
@@ -51,6 +74,16 @@ function renderLectureState(paused, state = "ready") {
   } else {
     lectureStatus.textContent = "Live";
   }
+  syncTeleprompterScroll();
+}
+
+function applySlideAdvance(slideIndex) {
+  const slides = getSlides();
+  if (!Number.isInteger(slideIndex) || slideIndex < 0 || slideIndex >= slides.length) {
+    return;
+  }
+  Reveal.slide(slideIndex);
+  updatePresenterPanel();
 }
 
 function connectControlSocket() {
@@ -66,6 +99,9 @@ function connectControlSocket() {
     const message = JSON.parse(event.data);
     if (message.type === "control_state") {
       renderLectureState(Boolean(message.paused), message.state || "ready");
+    } else if (message.type === "slide_advance") {
+      renderLectureState(Boolean(message.paused), message.state || "running");
+      applySlideAdvance(message.slide_index);
     }
   });
 
