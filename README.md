@@ -2,9 +2,11 @@
 
 A FastAPI + Reveal.js classroom lecture presenter for Wayne's high-school classroom.
 
-Current status: Phase 2A complete.
+Current status: Phase 2B complete.
 
-Phase 2A adds the media folder infrastructure needed for later Phase 2 work. The app can now safely serve files from `media/` at the `/media` URL path. Phase 2A does not yet add Markdown image syntax, YouTube embeds, per-slide timing, or the lecture-status API. Those are later Phase 2 sub-phases and should not be expected during this test.
+Phase 2B adds a safe media URL resolver for future Markdown image support. The app can now turn a simple image filename such as `chloroplast.png` into `/media/images/chloroplast.png`, while rejecting unsafe values such as paths, parent-directory traversal, and absolute paths.
+
+Phase 2B does not yet add Markdown image syntax, YouTube embeds, per-slide timing, wait markers, or the lecture-status API. Those are later Phase 2 sub-phases and should not be expected during this test.
 
 Repository:
 
@@ -27,11 +29,12 @@ The app currently includes:
 - Protected direct command endpoint at `/api/telegram-command`
 - Protected start-lecture endpoint at `/api/start-lecture`
 - Phase 2A media folder serving at `/media`
+- Phase 2B safe media filename-to-URL resolver for future image support
 
-Important current limitation:
+Important current limitations:
 
 - The presenter still shows the existing Phase 1 sample slide deck.
-- Phase 2A only prepares the media folder. It does not yet display images from Markdown.
+- Phase 2B prepares safe image URL handling, but images are not yet rendered from Markdown.
 - Lecture state is still stored in memory. Restarting the server clears the active session.
 
 ## Requirements for laptop testing
@@ -107,9 +110,9 @@ test-password
 
 The command above uses `LECTURE_SLIDE_SECONDS='5'` so that automatic slide advance can be tested quickly. For normal classroom pacing later, use a larger value such as `75`.
 
-## Phase 2A test checklist
+## Phase 2B test checklist
 
-Complete these tests on the laptop before moving to Phase 2B.
+Complete these tests on the laptop before moving to Phase 2C.
 
 ### 1. Confirm the app starts
 
@@ -119,7 +122,7 @@ Expected result:
 - The browser opens `http://127.0.0.1:8000/`.
 - You see the login page.
 
-### 2. Confirm login works
+### 2. Confirm login still works
 
 Use the password:
 
@@ -145,7 +148,7 @@ On the presenter page, test:
 Expected result:
 
 - The existing Phase 1 controls still work.
-- Nothing about Phase 2A should break the presenter.
+- Nothing about Phase 2B should change the visible presenter behavior yet.
 
 ### 4. Confirm automatic slide advance still works
 
@@ -172,30 +175,13 @@ curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
   -d '{"text":"End lecture"}'
 ```
 
-### 5. Confirm the empty media folder is handled safely
-
-Open this address in your browser:
-
-```text
-http://127.0.0.1:8000/media/images/
-```
-
-Expected result:
-
-- A `404 Not Found` response is okay.
-- The app should not crash.
-
-This is expected because Phase 2A creates the folder but does not commit sample images.
-
-### 6. Confirm a temporary image can be served
+### 5. Confirm media serving still works
 
 Put any small image file into the project folder at:
 
 ```text
 media/images/test-image.png
 ```
-
-For example, if you already have an image on your Desktop, copy it into the project folder and name it `test-image.png`.
 
 Then open:
 
@@ -213,7 +199,43 @@ After the test, you may delete the temporary image:
 rm media/images/test-image.png
 ```
 
-### 7. Confirm the app does not expose source files through media URLs
+### 6. Confirm the Phase 2B safe media resolver
+
+Open a second terminal window in the project folder and run:
+
+```bash
+source .venv/bin/activate
+python3 - <<'PY'
+from app.main import get_media_url
+
+tests = {
+    "chloroplast.png": "/media/images/chloroplast.png",
+    "cell diagram.png": "/media/images/cell%20diagram.png",
+    "../secret": None,
+    "/etc/passwd": None,
+    "slides/chloroplast.png": None,
+    r"slides\\chloroplast.png": None,
+    "": None,
+}
+
+for value, expected in tests.items():
+    actual = get_media_url(value)
+    print(f"{value!r} -> {actual!r}")
+    assert actual == expected, f"Expected {expected!r}, got {actual!r}"
+
+print("Phase 2B media resolver checks passed.")
+PY
+```
+
+Expected result:
+
+```text
+Phase 2B media resolver checks passed.
+```
+
+Some rejected test values may also print a short rejection warning. That is expected.
+
+### 7. Confirm source files are not exposed through media URLs
 
 Open this address:
 
@@ -239,7 +261,7 @@ Ctrl+C
 If every item above works, reply:
 
 ```text
-Phase 2A tested — proceed to Phase 2B
+Phase 2B tested — proceed to Phase 2C
 ```
 
 If something does not work, report:
@@ -249,4 +271,4 @@ If something does not work, report:
 - What actually happened
 - Any error text shown in the browser or terminal
 
-Do not proceed to Phase 2B until Phase 2A is tested successfully.
+Do not proceed to Phase 2C until Phase 2B is tested successfully.

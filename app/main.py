@@ -4,9 +4,9 @@ import asyncio
 import contextlib
 import os
 import secrets
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Annotated
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 import bcrypt
 from fastapi import Cookie, FastAPI, Header, Request, WebSocket, WebSocketDisconnect, status
@@ -35,7 +35,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.1",
+    version="0.9.2",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -90,6 +90,29 @@ def read_note_file(filename: str) -> str | None:
     if not requested_path.is_file():
         return None
     return requested_path.read_text(encoding="utf-8")
+
+
+def get_media_url(filename: str) -> str | None:
+    """Return a safe public URL for an image filename, or None if unsafe."""
+    cleaned_filename = filename.strip()
+
+    if not cleaned_filename:
+        print("Rejected media filename: empty value")
+        return None
+    if cleaned_filename.startswith("/") or cleaned_filename.startswith("\\"):
+        print(f"Rejected media filename with leading slash: {filename!r}")
+        return None
+    if "/" in cleaned_filename or "\\" in cleaned_filename:
+        print(f"Rejected media filename with path separator: {filename!r}")
+        return None
+    if ".." in cleaned_filename:
+        print(f"Rejected media filename with parent traversal: {filename!r}")
+        return None
+    if PurePath(cleaned_filename).name != cleaned_filename:
+        print(f"Rejected media filename with path component: {filename!r}")
+        return None
+
+    return f"/media/images/{quote(cleaned_filename)}"
 
 
 def get_active_session_code(requested_session_code: str | None = None) -> str | None:
@@ -408,7 +431,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 1I Reveal.js lecture page."""
+    """Render the protected Phase 2B Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -428,7 +451,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 1I • Session {session_code}
+          Hermes Lecture System • Phase 2B • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
