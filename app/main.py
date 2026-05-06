@@ -3,7 +3,9 @@
 import asyncio
 import contextlib
 import os
+import re
 import secrets
+from html import escape
 from pathlib import Path, PurePath
 from typing import Annotated
 from urllib.parse import parse_qs, quote
@@ -35,7 +37,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.2",
+    version="0.9.3",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -113,6 +115,135 @@ def get_media_url(filename: str) -> str | None:
         return None
 
     return f"/media/images/{quote(cleaned_filename)}"
+
+
+def markdown_lines_to_html(markdown_text: str) -> str:
+    """Convert a small, safe Markdown subset to HTML while preserving media HTML."""
+    html_blocks: list[str] = []
+    list_items: list[str] = []
+
+    def flush_list() -> None:
+        if list_items:
+            html_blocks.append("<ul>" + "".join(list_items) + "</ul>")
+            list_items.clear()
+
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flush_list()
+            continue
+        if line.startswith("<img ") or line.startswith("<iframe ") or line.startswith("<div "):
+            flush_list()
+            html_blocks.append(line)
+            continue
+        if line.startswith("- "):
+            list_items.append(f"<li>{escape(line[2:].strip())}</li>")
+            continue
+        flush_list()
+        html_blocks.append(f"<p>{escape(line)}</p>")
+
+    flush_list()
+    return "\n".join(html_blocks)
+
+
+def replace_media_tokens(markdown_text: str) -> tuple[str, list[dict[str, str]]]:
+    """Replace supported Phase 2C media tokens and return collected metadata."""
+    media: list[dict[str, str]] = []
+
+    def replace_image(match: re.Match[str]) -> str:
+        filename = match.group(1).strip()
+        media_url = get_media_url(filename)
+        if media_url is None:
+            return ""
+        media.append({"type": "image", "value": filename, "url": media_url})
+        return f'<img src="{media_url}" style="max-width:100%; height:auto;">'
+
+    def replace_youtube(match: re.Match[str]) -> str:
+        video_id = match.group(1).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", video_id):
+            print(f"Rejected YouTube video ID: {video_id!r}")
+            return ""
+        embed_url = f"https://www.youtube.com/embed/{quote(video_id)}"
+        media.append({"type": "youtube", "value": video_id, "url": embed_url})
+        return f'<iframe src="{embed_url}" width="100%" height="500" allowfullscreen></iframe>'
+
+    with_images = re.sub(r"\{\{image:([^}]+)\}\}", replace_image, markdown_text)
+    with_videos = re.sub(r"\{\{youtube:([^}]+)\}\}", replace_youtube, with_images)
+    return with_videos, media
+
+
+def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
+    """Build a rich lecture payload from Markdown while preserving Phase 1 compatibility."""
+    original_markdown = content or ""
+    cleaned_title = title.strip() or "Untitled Lecture"
+    markdown = original_markdown.strip()
+    slides: list[dict[str, object]] = []
+
+    if not markdown:
+        slides.append(
+            {
+                "heading": cleaned_title,
+                "body": "<p>Lecture is ready. Use Begin lecture when the class is ready.</p>",
+                "narration": f"Begin the lecture on {cleaned_title}.",
+                "duration": int(LECTURE_SLIDE_SECONDS),
+                "wait": False,
+                "media": [],
+                "poll": None,
+                "knowledge_check": None,
+            }
+        )
+    else:
+        sections = re.split(r"(?m)^##\s+", markdown)
+        preamble = sections[0].strip()
+        slide_sections = sections[1:] if len(sections) > 1 else []
+
+        if not slide_sections:
+            rendered_body, media = replace_media_tokens(markdown)
+            slides.append(
+                {
+                    "heading": cleaned_title,
+                    "body": markdown_lines_to_html(rendered_body),
+                    "narration": re.sub(r"\{\{[^}]+\}\}", "", markdown).strip() or cleaned_title,
+                    "duration": int(LECTURE_SLIDE_SECONDS),
+                    "wait": False,
+                    "media": media,
+                    "poll": None,
+                    "knowledge_check": None,
+                }
+            )
+        else:
+            for section in slide_sections:
+                lines = section.splitlines()
+                raw_heading = lines[0].strip() if lines else cleaned_title
+                heading = raw_heading or cleaned_title
+                body_markdown = "\n".join(lines[1:]).strip()
+                rendered_body, media = replace_media_tokens(body_markdown)
+                narration = re.sub(r"\{\{[^}]+\}\}", "", body_markdown).strip() or heading
+                slides.append(
+                    {
+                        "heading": heading,
+                        "body": markdown_lines_to_html(rendered_body),
+                        "narration": narration,
+                        "duration": int(LECTURE_SLIDE_SECONDS),
+                        "wait": False,
+                        "media": media,
+                        "poll": None,
+                        "knowledge_check": None,
+                    }
+                )
+
+        if preamble and preamble.startswith("#"):
+            first_line = preamble.splitlines()[0].lstrip("# ").strip()
+            if first_line and cleaned_title == "Untitled Lecture":
+                cleaned_title = first_line
+
+    return {
+        "title": cleaned_title,
+        "slides": slides,
+        "narration": [str(slide["narration"]) for slide in slides],
+        "source_markdown": original_markdown,
+        "original_markdown": original_markdown,
+    }
 
 
 def get_active_session_code(requested_session_code: str | None = None) -> str | None:
@@ -431,7 +562,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 2B Reveal.js lecture page."""
+    """Render the protected Phase 2C Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -451,7 +582,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 2B • Session {session_code}
+          Hermes Lecture System • Phase 2C • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
