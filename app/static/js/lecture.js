@@ -112,8 +112,20 @@ function connectControlSocket() {
   });
 }
 
-previousButton.addEventListener("click", () => Reveal.prev());
-nextButton.addEventListener("click", () => Reveal.next());
+previousButton.addEventListener("click", () => {
+  if (controlSocket?.readyState === WebSocket.OPEN) {
+    controlSocket.send(JSON.stringify({ command: "previous" }));
+  } else {
+    Reveal.prev();
+  }
+});
+nextButton.addEventListener("click", () => {
+  if (controlSocket?.readyState === WebSocket.OPEN) {
+    controlSocket.send(JSON.stringify({ command: "next" }));
+  } else {
+    Reveal.next();
+  }
+});
 pauseResumeButton.addEventListener("click", () => {
   if (controlSocket?.readyState === WebSocket.OPEN) {
     controlSocket.send(JSON.stringify({ command: lecturePaused ? "resume" : "pause" }));

@@ -5,6 +5,7 @@ import contextlib
 import os
 import re
 import secrets
+import time
 from html import escape
 from pathlib import Path, PurePath
 from typing import Annotated
@@ -31,13 +32,14 @@ LECTURE_SESSIONS: dict[str, dict[str, object]] = {}
 LECTURE_CONTROL_STATE: dict[str, bool] = {}
 LECTURE_RUNTIME_STATE: dict[str, str] = {}
 LECTURE_SLIDE_INDEX: dict[str, int] = {}
+LECTURE_SLIDE_STARTED_AT: dict[str, float] = {}
 LECTURE_AUTONOMOUS_TASKS: dict[str, asyncio.Task[None]] = {}
 WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.3",
+    version="0.9.4",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -172,6 +174,13 @@ def replace_media_tokens(markdown_text: str) -> tuple[str, list[dict[str, str]]]
     return with_videos, media
 
 
+def parse_slide_heading(raw_heading: str) -> tuple[str, bool]:
+    """Strip Phase 2D wait markers from a slide heading and report wait mode."""
+    has_wait_marker = bool(re.search(r"\{\{\s*(?:wait|pause-autopilot)\s*\}\}", raw_heading, flags=re.IGNORECASE))
+    cleaned_heading = re.sub(r"\s*\{\{\s*(?:wait|pause-autopilot)\s*\}\}", "", raw_heading, flags=re.IGNORECASE).strip()
+    return cleaned_heading, has_wait_marker
+
+
 def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
     """Build a rich lecture payload from Markdown while preserving Phase 1 compatibility."""
     original_markdown = content or ""
@@ -215,7 +224,8 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
             for section in slide_sections:
                 lines = section.splitlines()
                 raw_heading = lines[0].strip() if lines else cleaned_title
-                heading = raw_heading or cleaned_title
+                parsed_heading, wait_for_manual_advance = parse_slide_heading(raw_heading or cleaned_title)
+                heading = parsed_heading or cleaned_title
                 body_markdown = "\n".join(lines[1:]).strip()
                 rendered_body, media = replace_media_tokens(body_markdown)
                 narration = re.sub(r"\{\{[^}]+\}\}", "", body_markdown).strip() or heading
@@ -225,7 +235,7 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
                         "body": markdown_lines_to_html(rendered_body),
                         "narration": narration,
                         "duration": int(LECTURE_SLIDE_SECONDS),
-                        "wait": False,
+                        "wait": wait_for_manual_advance,
                         "media": media,
                         "poll": None,
                         "knowledge_check": None,
@@ -270,6 +280,8 @@ def build_help_message() -> str:
         "- Begin lecture\n"
         "- Pause lecture\n"
         "- Resume lecture\n"
+        "- Next slide\n"
+        "- Previous slide\n"
         "- End lecture\n\n"
         "Open the presenter and log in first so commands can target the active SESSION_CODE."
     )
@@ -321,13 +333,61 @@ def parse_telegram_payload(payload: object) -> tuple[str, int | str | None, str 
     return "", None, None
 
 
+def get_session_slides(session_code: str) -> list[dict[str, object]]:
+    """Return slide dictionaries for an active lecture payload, if present."""
+    lecture = LECTURE_SESSIONS.get(session_code, {})
+    slides = lecture.get("slides") if isinstance(lecture, dict) else None
+    if not isinstance(slides, list):
+        return []
+    return [slide for slide in slides if isinstance(slide, dict)]
+
+
 def get_slide_count(session_code: str) -> int:
     """Return how many slides the current presenter page can advance through."""
-    return PRESENTER_SLIDE_COUNT
+    return max(PRESENTER_SLIDE_COUNT, len(get_session_slides(session_code)))
+
+
+def get_current_slide(session_code: str) -> dict[str, object]:
+    """Return metadata for the current slide, or an empty dict for legacy static slides."""
+    slides = get_session_slides(session_code)
+    current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
+    if 0 <= current_index < len(slides):
+        return slides[current_index]
+    return {}
+
+
+def get_current_slide_duration(session_code: str) -> float:
+    """Return the current slide duration, falling back to the global default."""
+    duration = get_current_slide(session_code).get("duration")
+    if isinstance(duration, (int, float)) and duration > 0:
+        return float(duration)
+    return max(float(LECTURE_SLIDE_SECONDS), 0.01)
+
+
+def is_current_slide_waiting(session_code: str) -> bool:
+    """Return whether the current slide has an explicit Phase 2D wait marker."""
+    return bool(get_current_slide(session_code).get("wait"))
+
+
+def mark_slide_started(session_code: str) -> None:
+    """Record when the current slide became active for duration tracking."""
+    LECTURE_SLIDE_STARTED_AT[session_code] = time.monotonic()
+
+
+def get_duration_remaining(session_code: str) -> float:
+    """Return seconds remaining on the current slide for WebSocket clients."""
+    if LECTURE_RUNTIME_STATE.get(session_code) != "running" or LECTURE_CONTROL_STATE.get(session_code, False):
+        return get_current_slide_duration(session_code)
+    if is_current_slide_waiting(session_code):
+        return 0.0
+    started_at = LECTURE_SLIDE_STARTED_AT.get(session_code, time.monotonic())
+    elapsed = time.monotonic() - started_at
+    return max(get_current_slide_duration(session_code) - elapsed, 0.0)
 
 
 def build_control_message(session_code: str, message_type: str = "control_state") -> dict[str, object]:
     """Build the WebSocket state payload shared by controls and autonomous mode."""
+    current_duration = get_current_slide_duration(session_code)
     return {
         "type": message_type,
         "paused": LECTURE_CONTROL_STATE.get(session_code, False),
@@ -336,6 +396,9 @@ def build_control_message(session_code: str, message_type: str = "control_state"
         "slide_index": LECTURE_SLIDE_INDEX.get(session_code, 0),
         "slide_count": get_slide_count(session_code),
         "slide_seconds": LECTURE_SLIDE_SECONDS,
+        "slide_duration": current_duration,
+        "is_waiting": is_current_slide_waiting(session_code),
+        "duration_remaining": round(get_duration_remaining(session_code), 2),
     }
 
 
@@ -357,15 +420,38 @@ async def stop_autonomous_lecture(session_code: str) -> None:
 
 
 async def auto_advance_lecture(session_code: str) -> None:
-    """Advance presenter slides while a lecture is running and not paused."""
+    """Advance presenter slides while respecting per-slide duration and wait markers."""
     LECTURE_AUTONOMOUS_TASKS[session_code] = asyncio.current_task()  # type: ignore[assignment]
+    mark_slide_started(session_code)
 
     while LECTURE_RUNTIME_STATE.get(session_code) == "running":
-        await asyncio.sleep(max(LECTURE_SLIDE_SECONDS, 0.01))
+        if LECTURE_CONTROL_STATE.get(session_code, False):
+            await asyncio.sleep(0.1)
+            continue
+
+        if is_current_slide_waiting(session_code):
+            await broadcast_control_state(session_code)
+            while (
+                LECTURE_RUNTIME_STATE.get(session_code) == "running"
+                and not LECTURE_CONTROL_STATE.get(session_code, False)
+                and is_current_slide_waiting(session_code)
+            ):
+                await asyncio.sleep(0.1)
+            mark_slide_started(session_code)
+            continue
+
+        mark_slide_started(session_code)
+        while get_duration_remaining(session_code) > 0:
+            if LECTURE_RUNTIME_STATE.get(session_code) != "running":
+                break
+            if LECTURE_CONTROL_STATE.get(session_code, False) or is_current_slide_waiting(session_code):
+                break
+            await asyncio.sleep(min(get_duration_remaining(session_code), 1.0))
+            await broadcast_control_state(session_code)
 
         if LECTURE_RUNTIME_STATE.get(session_code) != "running":
             break
-        if LECTURE_CONTROL_STATE.get(session_code, False):
+        if LECTURE_CONTROL_STATE.get(session_code, False) or is_current_slide_waiting(session_code):
             continue
 
         current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
@@ -377,11 +463,23 @@ async def auto_advance_lecture(session_code: str) -> None:
             break
 
         LECTURE_SLIDE_INDEX[session_code] = current_index + 1
+        mark_slide_started(session_code)
         await broadcast_control_state(session_code, message_type="slide_advance")
 
     task = LECTURE_AUTONOMOUS_TASKS.get(session_code)
     if task is asyncio.current_task():
         LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
+
+
+async def advance_lecture_slide(session_code: str, step: int) -> int:
+    """Move the tracked slide index manually and reset Phase 2D timing."""
+    slide_count = get_slide_count(session_code)
+    current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
+    next_index = min(max(current_index + step, 0), max(slide_count - 1, 0))
+    LECTURE_SLIDE_INDEX[session_code] = next_index
+    mark_slide_started(session_code)
+    await broadcast_control_state(session_code, message_type="slide_advance")
+    return next_index
 
 
 async def apply_telegram_command(command_text: str, request: Request, requested_session_code: str | None = None) -> dict[str, object]:
@@ -419,6 +517,7 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
         LECTURE_RUNTIME_STATE[session_code] = "ready"
         LECTURE_CONTROL_STATE[session_code] = False
         LECTURE_SLIDE_INDEX[session_code] = 0
+        mark_slide_started(session_code)
         await stop_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         note_line = f" using notes/{note_filename}" if note_filename and note_content else ""
@@ -435,6 +534,7 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
         LECTURE_RUNTIME_STATE[session_code] = "running"
         LECTURE_CONTROL_STATE[session_code] = False
         LECTURE_SLIDE_INDEX[session_code] = 0
+        mark_slide_started(session_code)
         start_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         return {"ok": True, "reply": f"Lecture begun. Autonomous slide advance is running every {LECTURE_SLIDE_SECONDS:g} seconds. Presenter: {presenter_url}", "url": presenter_url, "session_code": session_code, "state": "running", "slide_seconds": LECTURE_SLIDE_SECONDS}
@@ -447,13 +547,23 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
     if normalized in {"resume lecture", "/resume", "resume"}:
         LECTURE_RUNTIME_STATE[session_code] = "running"
         LECTURE_CONTROL_STATE[session_code] = False
+        mark_slide_started(session_code)
         start_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         return {"ok": True, "reply": "Lecture resumed. Autonomous slide advance is running.", "session_code": session_code, "state": "running", "paused": False, "slide_seconds": LECTURE_SLIDE_SECONDS}
 
+    if normalized in {"next slide", "/next", "next"}:
+        slide_index = await advance_lecture_slide(session_code, 1)
+        return {"ok": True, "reply": f"Advanced to slide {slide_index + 1}.", "session_code": session_code, "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"), "slide_index": slide_index}
+
+    if normalized in {"previous slide", "prev slide", "/previous", "/prev", "previous", "prev"}:
+        slide_index = await advance_lecture_slide(session_code, -1)
+        return {"ok": True, "reply": f"Moved back to slide {slide_index + 1}.", "session_code": session_code, "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"), "slide_index": slide_index}
+
     if normalized in {"end lecture", "/end", "end"}:
         LECTURE_RUNTIME_STATE[session_code] = "ended"
         LECTURE_CONTROL_STATE[session_code] = True
+        LECTURE_SLIDE_STARTED_AT.pop(session_code, None)
         await stop_autonomous_lecture(session_code)
         await broadcast_control_state(session_code)
         return {"ok": True, "reply": "Lecture ended.", "session_code": session_code, "state": "ended", "paused": True}
@@ -552,6 +662,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
             LECTURE_CONTROL_STATE.pop(session_code, None)
             LECTURE_RUNTIME_STATE.pop(session_code, None)
             LECTURE_SLIDE_INDEX.pop(session_code, None)
+            LECTURE_SLIDE_STARTED_AT.pop(session_code, None)
             task = LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
             if task and not task.done():
                 task.cancel()
@@ -562,7 +673,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 2C Reveal.js lecture page."""
+    """Render the protected Phase 2D Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -582,7 +693,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 2C • Session {session_code}
+          Hermes Lecture System • Phase 2D • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -691,12 +802,18 @@ async def websocket_session(websocket: WebSocket) -> None:
             elif command == "resume":
                 LECTURE_RUNTIME_STATE[session_code] = "running"
                 LECTURE_CONTROL_STATE[session_code] = False
+                mark_slide_started(session_code)
                 start_autonomous_lecture(session_code)
                 await broadcast_control_state(session_code)
+            elif command == "next":
+                await advance_lecture_slide(session_code, 1)
+            elif command == "previous":
+                await advance_lecture_slide(session_code, -1)
             elif command == "toggle":
                 LECTURE_CONTROL_STATE[session_code] = not LECTURE_CONTROL_STATE.get(session_code, False)
                 if not LECTURE_CONTROL_STATE[session_code]:
                     LECTURE_RUNTIME_STATE[session_code] = "running"
+                    mark_slide_started(session_code)
                     start_autonomous_lecture(session_code)
                 await broadcast_control_state(session_code)
             else:
@@ -775,6 +892,7 @@ async def start_lecture(request: Request, hermes_session_id: Annotated[str | Non
     LECTURE_RUNTIME_STATE[session_code] = "ready"
     LECTURE_CONTROL_STATE[session_code] = False
     LECTURE_SLIDE_INDEX[session_code] = 0
+    mark_slide_started(session_code)
     await stop_autonomous_lecture(session_code)
     await broadcast_control_state(session_code)
 
