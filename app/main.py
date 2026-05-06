@@ -19,6 +19,7 @@ LECTURE_SLIDE_SECONDS = float(os.getenv("LECTURE_SLIDE_SECONDS", "75"))
 PRESENTER_SLIDE_COUNT = 5
 SESSION_COOKIE_NAME = "hermes_session_id"
 NOTES_DIR = Path("notes").resolve()
+MEDIA_DIR = Path("media").resolve()
 
 # The configured password is hashed with bcrypt at startup. Login attempts are
 # checked against this hash; the plain password is never stored in a session.
@@ -38,6 +39,17 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+def mount_media() -> None:
+    """Mount the optional media directory used for teacher-provided assets."""
+    if not MEDIA_DIR.exists():
+        print(f"Warning: media directory not found at {MEDIA_DIR}; /media was not mounted.")
+        return
+    app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+
+mount_media()
 
 
 def verify_password(password: str) -> bool:
