@@ -39,7 +39,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.4",
+    version="0.9.5",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -385,6 +385,50 @@ def get_duration_remaining(session_code: str) -> float:
     return max(get_current_slide_duration(session_code) - elapsed, 0.0)
 
 
+def get_time_on_slide(session_code: str) -> float:
+    """Return how many seconds the current slide has been active."""
+    started_at = LECTURE_SLIDE_STARTED_AT.get(session_code)
+    if started_at is None:
+        return 0.0
+    return max(time.monotonic() - started_at, 0.0)
+
+
+def summarize_slide_body(body: object, max_length: int = 180) -> str:
+    """Return a compact text summary from a slide body value."""
+    if not isinstance(body, str):
+        return ""
+    without_tags = re.sub(r"<[^>]+>", " ", body)
+    compact = " ".join(without_tags.split())
+    if len(compact) <= max_length:
+        return compact
+    return compact[: max_length - 1].rstrip() + "…"
+
+
+def build_lecture_status(session_code: str) -> dict[str, object]:
+    """Build the compact Phase 2E lecture-status payload for Hermes."""
+    current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
+    current_slide = get_current_slide(session_code)
+    session_slides = get_session_slides(session_code)
+    media = current_slide.get("media") if isinstance(current_slide, dict) else []
+    if not isinstance(media, list):
+        media = []
+
+    return {
+        "session_code": session_code,
+        "state": LECTURE_RUNTIME_STATE.get(session_code, "ready"),
+        "current_slide_index": current_index,
+        "current_slide": {
+            "heading": str(current_slide.get("heading", "")) if current_slide else "",
+            "body_summary": summarize_slide_body(current_slide.get("body", "")) if current_slide else "",
+        },
+        "is_paused": LECTURE_CONTROL_STATE.get(session_code, False),
+        "wait_mode": is_current_slide_waiting(session_code),
+        "time_on_slide_seconds": round(get_time_on_slide(session_code), 2),
+        "total_slides": len(session_slides) if session_slides else PRESENTER_SLIDE_COUNT,
+        "media_on_slide": media,
+    }
+
+
 def build_control_message(session_code: str, message_type: str = "control_state") -> dict[str, object]:
     """Build the WebSocket state payload shared by controls and autonomous mode."""
     current_duration = get_current_slide_duration(session_code)
@@ -673,7 +717,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 2D Reveal.js lecture page."""
+    """Render the protected Phase 2E Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -693,7 +737,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 2D • Session {session_code}
+          Hermes Lecture System • Phase 2E • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -732,7 +776,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
             <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
               <h2>Why It Matters</h2>
               <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 1I: Deployment-ready controls, notes, Telegram commands, and documentation are complete.</p>
+              <p class="mt-8 text-cyan-200">Phase 2E: Protected lecture-status API is available for Hermes visibility.</p>
             </section>
           </div>
         </div>
@@ -776,6 +820,15 @@ def api_session(hermes_session_id: Annotated[str | None, Cookie()] = None) -> JS
     if not session_code:
         return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
     return JSONResponse({"session_code": session_code})
+
+
+@app.get("/api/lecture-status")
+def lecture_status(hermes_session_id: Annotated[str | None, Cookie()] = None) -> JSONResponse:
+    """Protected Phase 2E endpoint exposing compact lecture status for Hermes."""
+    session_code = get_session_code(hermes_session_id)
+    if not session_code:
+        return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
+    return JSONResponse(build_lecture_status(session_code))
 
 
 @app.websocket("/ws/session")

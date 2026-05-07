@@ -65,3 +65,42 @@ def test_pause_and_end_prevent_autonomous_slide_advancement(monkeypatch):
     slide_messages = [message for message in websocket.messages if message.get("type") == "slide_advance"]
     assert slide_messages == []
     assert main.LECTURE_AUTONOMOUS_TASKS.get(session_code) is None or main.LECTURE_AUTONOMOUS_TASKS[session_code].done()
+
+
+def test_build_lecture_status_returns_compact_current_slide(monkeypatch):
+    main = load_main(monkeypatch)
+
+    _session_id, session_code = main.create_session()
+    main.LECTURE_SESSIONS[session_code] = {
+        "title": "Status Test",
+        "slides": [
+            {
+                "heading": "Intro",
+                "body": "<p>Short body for Hermes.</p>",
+                "duration": 3,
+                "wait": False,
+                "media": [],
+            },
+            {
+                "heading": "Checkpoint",
+                "body": "<p>Ask students to explain the model.</p>",
+                "duration": 4,
+                "wait": True,
+                "media": [{"type": "image", "value": "cell.png", "url": "/media/images/cell.png"}],
+            },
+        ],
+    }
+    main.LECTURE_RUNTIME_STATE[session_code] = "running"
+    main.LECTURE_CONTROL_STATE[session_code] = False
+    main.LECTURE_SLIDE_INDEX[session_code] = 1
+    main.mark_slide_started(session_code)
+
+    status_payload = main.build_lecture_status(session_code)
+
+    assert status_payload["current_slide_index"] == 1
+    assert status_payload["current_slide"] == {"heading": "Checkpoint", "body_summary": "Ask students to explain the model."}
+    assert status_payload["is_paused"] is False
+    assert status_payload["wait_mode"] is True
+    assert status_payload["total_slides"] == 2
+    assert status_payload["media_on_slide"] == [{"type": "image", "value": "cell.png", "url": "/media/images/cell.png"}]
+    assert isinstance(status_payload["time_on_slide_seconds"], float)
