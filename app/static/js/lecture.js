@@ -86,6 +86,16 @@ function applySlideAdvance(slideIndex) {
   updatePresenterPanel();
 }
 
+function reloadIfPresenterDeckChanged(message) {
+  const serverSlideCount = Number(message.slide_count);
+  if (message.state !== "ready" || !Number.isInteger(serverSlideCount)) {
+    return;
+  }
+  if (serverSlideCount !== getSlides().length) {
+    window.location.reload();
+  }
+}
+
 function connectControlSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   controlSocket = new WebSocket(`${protocol}//${window.location.host}/ws/session`);
@@ -99,6 +109,7 @@ function connectControlSocket() {
     const message = JSON.parse(event.data);
     if (message.type === "control_state") {
       renderLectureState(Boolean(message.paused), message.state || "ready");
+      reloadIfPresenterDeckChanged(message);
     } else if (message.type === "slide_advance") {
       renderLectureState(Boolean(message.paused), message.state || "running");
       applySlideAdvance(message.slide_index);

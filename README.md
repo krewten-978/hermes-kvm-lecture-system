@@ -2,9 +2,9 @@
 
 A FastAPI + Reveal.js classroom lecture presenter for Wayne's high-school classroom.
 
-Current status: Phase 2F complete.
+Current status: Phase 2F complete with Phase 2F retest fixes for presenter-session targeting.
 
-Phase 2F wires the Phase 2 Markdown parser into Telegram/direct lecture-start commands, updates the sample Photosynthesis note with image, YouTube, and wait-marker examples, renders parsed note slides on the presenter page, and documents the Phase 2 Markdown syntax.
+Phase 2F wires the Phase 2 Markdown parser into Telegram/direct lecture-start commands, updates the sample Photosynthesis note with image, YouTube, and wait-marker examples, renders parsed note slides on the presenter page, and documents the Phase 2 Markdown syntax. The Phase 2F retest fix also keeps direct curl commands attached to the visible browser presenter when a separate curl login is used for `/api/lecture-status`.
 
 Repository:
 
@@ -201,7 +201,7 @@ curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
 Expected result:
 
 - The JSON response says the lecture is ready.
-- Refresh `http://127.0.0.1:8000/` in the browser.
+- Refresh `http://127.0.0.1:8000/` in the browser if it does not reload automatically.
 - The presenter now renders slides from `notes/sample-photosynthesis.md`.
 - The slide deck includes the local image from `media/images/photosynthesis-overview.svg`.
 - The deck includes the embedded YouTube slide.
@@ -276,7 +276,8 @@ curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
 Expected result:
 
 - Pause stops automatic advancement.
-- Resume restarts automatic advancement.
+- Resume restarts automatic advancement on the visible browser presenter, even after the separate `/api/lecture-status` curl login above.
+- If the current slide is the Teacher Checkpoint wait slide, Resume will return the deck to running state but will intentionally keep waiting there until you use `Next slide` or the browser Next button.
 - End marks the lecture ended and stops autopilot.
 
 ### 6. Confirm source files are not exposed through media URLs

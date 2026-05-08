@@ -25,7 +25,11 @@ def test_begin_lecture_starts_autonomous_slide_advancement_task(monkeypatch):
     main.WEBSOCKET_CONNECTIONS[session_code] = [websocket]
     main.LECTURE_RUNTIME_STATE[session_code] = "running"
     main.LECTURE_CONTROL_STATE[session_code] = False
-    main.LECTURE_SESSIONS[session_code] = {"title": "One payload slide", "slides": [{"heading": "Only payload slide"}], "narration": ["Notes"]}
+    main.LECTURE_SESSIONS[session_code] = {
+        "title": "Two payload slides",
+        "slides": [{"heading": "First payload slide"}, {"heading": "Second payload slide"}],
+        "narration": ["First notes", "Second notes"],
+    }
 
     async def run_task_once():
         task = asyncio.create_task(main.auto_advance_lecture(session_code))

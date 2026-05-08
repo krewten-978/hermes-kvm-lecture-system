@@ -39,7 +39,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.6",
+    version="0.9.7",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -257,10 +257,26 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
 
 
 def get_active_session_code(requested_session_code: str | None = None) -> str | None:
-    """Return the requested valid session code or the newest active session code."""
+    """Return the best command target session code.
+
+    Direct curl status checks can create extra authenticated sessions that do not
+    have a visible presenter page. Prefer a session with a live presenter
+    WebSocket so Telegram/direct commands keep controlling the slideshow Wayne
+    is actually watching.
+    """
     active_codes = list(SESSIONS.values())
     if requested_session_code and requested_session_code in active_codes:
         return requested_session_code
+
+    active_code_set = set(active_codes)
+    presenter_codes = [
+        session_code
+        for session_code, connections in WEBSOCKET_CONNECTIONS.items()
+        if session_code in active_code_set and connections
+    ]
+    if presenter_codes:
+        return presenter_codes[-1]
+
     if active_codes:
         return active_codes[-1]
     return None
@@ -344,7 +360,10 @@ def get_session_slides(session_code: str) -> list[dict[str, object]]:
 
 def get_slide_count(session_code: str) -> int:
     """Return how many slides the current presenter page can advance through."""
-    return max(PRESENTER_SLIDE_COUNT, len(get_session_slides(session_code)))
+    session_slides = get_session_slides(session_code)
+    if session_slides:
+        return len(session_slides)
+    return PRESENTER_SLIDE_COUNT
 
 
 def get_current_slide(session_code: str) -> dict[str, object]:

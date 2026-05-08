@@ -2,6 +2,14 @@ import asyncio
 import importlib
 
 
+class FakeWebSocket:
+    def __init__(self):
+        self.messages = []
+
+    async def send_json(self, message):
+        self.messages.append(message)
+
+
 class FakeRequest:
     def url_for(self, route_name):
         assert route_name == "home"
@@ -68,6 +76,43 @@ def test_presenter_page_renders_parsed_note_media_after_telegram_start(monkeypat
     assert "/media/images/" in body
     assert "https://www.youtube.com/embed/" in body
     assert "data-wait=\"true\"" in body
+
+
+def test_command_endpoint_prefers_visible_presenter_session_over_status_api_login(monkeypatch):
+    main = load_main(monkeypatch)
+    presenter_session_id, presenter_session_code = main.create_session()
+    _status_cookie_session_id, status_session_code = main.create_session()
+
+    # The browser presenter has the live WebSocket. A later curl login used only
+    # for /api/lecture-status must not steal later Telegram/direct commands.
+    main.WEBSOCKET_CONNECTIONS[presenter_session_code] = [FakeWebSocket()]
+
+    command_payload = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+        )
+    )
+
+    assert command_payload["ok"] is True
+    assert command_payload["session_code"] == presenter_session_code
+    assert presenter_session_code in main.LECTURE_SESSIONS
+    assert status_session_code not in main.LECTURE_SESSIONS
+
+    page_response = main.home(presenter_session_id)
+    body = page_response.body.decode("utf-8")
+    assert "photosynthesis-overview.svg" in body
+    assert "Slide 1 of 6" in body
+
+
+def test_parsed_lecture_slide_count_does_not_include_static_fallback_slides(monkeypatch):
+    main = load_main(monkeypatch)
+    session_code = create_active_session(main)
+    main.LECTURE_SESSIONS[session_code] = main.build_lecture_from_md("Short", "## Only Parsed Slide\nContent")
+
+    assert len(main.get_session_slides(session_code)) == 1
+    assert main.get_slide_count(session_code) == 1
+    assert main.build_lecture_status(session_code)["total_slides"] == 1
 
 
 def test_phase2f_sample_note_contains_required_markdown_tokens(monkeypatch):
