@@ -39,7 +39,7 @@ WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.5",
+    version="0.9.6",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -546,18 +546,13 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
         title = extract_lecture_title(command_text)
         note_filename = extract_note_filename(command_text)
         note_content = read_note_file(note_filename) if note_filename else None
-        slide_body = (
-            note_content.splitlines()[0].lstrip("# ").strip()
-            if note_content and note_content.splitlines()
-            else "Lecture is ready. Use Begin lecture when the class is ready."
-        )
-        narration = note_content or f"Begin the lecture on {title}."
-        LECTURE_SESSIONS[session_code] = {
-            "title": title,
-            "slides": [{"heading": title, "body": slide_body}],
-            "narration": [narration],
-            "source": f"notes/{note_filename}" if note_filename and note_content else "telegram",
-        }
+        if note_content:
+            lecture_payload = build_lecture_from_md(title, note_content)
+            lecture_payload["source"] = f"notes/{note_filename}"
+        else:
+            lecture_payload = build_lecture_from_md(title, None)
+            lecture_payload["source"] = "telegram"
+        LECTURE_SESSIONS[session_code] = lecture_payload
         LECTURE_RUNTIME_STATE[session_code] = "ready"
         LECTURE_CONTROL_STATE[session_code] = False
         LECTURE_SLIDE_INDEX[session_code] = 0
@@ -631,6 +626,32 @@ async def broadcast_control_state(session_code: str, message_type: str = "contro
         WEBSOCKET_CONNECTIONS[session_code] = active_connections
     else:
         WEBSOCKET_CONNECTIONS.pop(session_code, None)
+
+
+def render_slide_section(slide: dict[str, object]) -> str:
+    """Render one parsed Markdown slide for the Reveal presenter."""
+    heading = escape(str(slide.get("heading", "Untitled Slide")))
+    body = str(slide.get("body", ""))
+    narration = escape(str(slide.get("narration", "")), quote=True)
+    wait_attr = ' data-wait="true"' if slide.get("wait") is True else ""
+    return f'<section data-notes="{narration}"{wait_attr}>\n<h2>{heading}</h2>\n{body}\n</section>'
+
+
+def render_active_lecture_slides(session_code: str) -> str | None:
+    """Render active parsed lecture payload slides, if this session has one."""
+    slides = get_session_slides(session_code)
+    if not slides:
+        return None
+    return "\n".join(render_slide_section(slide) for slide in slides)
+
+
+def get_initial_teleprompter_text(session_code: str) -> str:
+    """Return initial teleprompter text for the active parsed lecture or static deck."""
+    first_slide = get_current_slide(session_code)
+    narration = first_slide.get("narration") if first_slide else None
+    if isinstance(narration, str) and narration.strip():
+        return narration.strip()
+    return "Welcome students. Today we are learning how plants make their own food."
 
 
 def login_page(error: str = "") -> str:
@@ -717,35 +738,14 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 2E Reveal.js lecture page."""
+    """Render the protected Phase 2F Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
     session_code = session_code_or_redirect
 
-    return HTMLResponse(f"""
-    <!doctype html>
-    <html lang="en">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Hermes KVM Lecture System</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
-        <link rel="stylesheet" href="/static/css/site.css" />
-      </head>
-      <body class="bg-slate-950 text-white">
-        <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 2E • Session {session_code}
-        </div>
-
-        <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
-          <button type="submit" class="rounded-full border border-slate-500 bg-slate-950/80 px-4 py-2 text-sm font-bold uppercase tracking-[0.2em] text-slate-200 hover:bg-slate-800">Logout</button>
-        </form>
-
-        <div class="reveal lecture-stage">
-          <div class="slides">
+    active_slides_markup = render_active_lecture_slides(session_code)
+    static_slides_markup = """
             <section data-notes="Welcome students. Today we are learning how plants make their own food. Start by emphasizing that photosynthesis is one of the most important processes for life on Earth." data-background-gradient="linear-gradient(135deg, #0f172a, #164e63)">
               <h1>Photosynthesis</h1>
               <p class="text-cyan-200">How plants turn light into food</p>
@@ -773,20 +773,50 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
                 <li><strong>Oxygen</strong> — released into the atmosphere</li>
               </ul>
             </section>
-            <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that later versions of this system will guide the lecture automatically from notes.">
+            <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that Phase 2F can now guide the lecture from Markdown notes.">
               <h2>Why It Matters</h2>
               <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 2E: Protected lecture-status API is available for Hermes visibility.</p>
+              <p class="mt-8 text-cyan-200">Phase 2F: Markdown notes can drive media, timing, and wait behavior.</p>
             </section>
+    """
+    slides_markup = active_slides_markup or static_slides_markup
+    slide_count = get_slide_count(session_code) if active_slides_markup else PRESENTER_SLIDE_COUNT
+    slide_counter_text = f"Slide 1 of {slide_count}"
+    teleprompter_text = escape(get_initial_teleprompter_text(session_code))
+
+    return HTMLResponse(f"""
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Hermes KVM Lecture System</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
+        <link rel="stylesheet" href="/static/css/site.css" />
+      </head>
+      <body class="bg-slate-950 text-white">
+        <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
+          Hermes Lecture System • Phase 2F • Session {session_code}
+        </div>
+
+        <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
+          <button type="submit" class="rounded-full border border-slate-500 bg-slate-950/80 px-4 py-2 text-sm font-bold uppercase tracking-[0.2em] text-slate-200 hover:bg-slate-800">Logout</button>
+        </form>
+
+        <div class="reveal lecture-stage">
+          <div class="slides">
+{slides_markup}
           </div>
         </div>
 
         <aside class="teleprompter" aria-label="Lecture teleprompter">
           <div class="teleprompter__header">
             <span>Teleprompter</span>
-            <span id="slide-counter">Slide 1 of 5</span>
+            <span id="slide-counter">{slide_counter_text}</span>
           </div>
-          <p id="teleprompter-text" class="teleprompter__text">Welcome students. Today we are learning how plants make their own food.</p>
+          <p id="teleprompter-text" class="teleprompter__text">{teleprompter_text}</p>
         </aside>
 
         <div id="lecture-status" class="lecture-status" aria-live="polite">Live</div>

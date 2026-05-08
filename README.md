@@ -2,11 +2,9 @@
 
 A FastAPI + Reveal.js classroom lecture presenter for Wayne's high-school classroom.
 
-Current status: Phase 2E complete.
+Current status: Phase 2F complete.
 
-Phase 2E adds a protected `GET /api/lecture-status` endpoint for Hermes visibility into the current lecture. It returns compact JSON with the current slide index, a short current-slide summary, pause/wait state, time on slide, total slides, and media on the current slide.
-
-Phase 2E does not update the sample Markdown lecture or wire Telegram note-start commands into the enhanced parser. Those are Phase 2F tasks.
+Phase 2F wires the Phase 2 Markdown parser into Telegram/direct lecture-start commands, updates the sample Photosynthesis note with image, YouTube, and wait-marker examples, renders parsed note slides on the presenter page, and documents the Phase 2 Markdown syntax.
 
 Repository:
 
@@ -19,7 +17,7 @@ https://github.com/krewten-978/hermes-kvm-lecture-system
 The app currently includes:
 
 - Protected login with `ADMIN_PASSWORD`
-- A full-screen Reveal.js sample lecture
+- A full-screen Reveal.js presenter
 - A large teleprompter panel
 - Previous / Next slide buttons that sync with backend lecture state
 - Pause / Resume lecture control
@@ -33,12 +31,14 @@ The app currently includes:
 - Phase 2C enhanced Markdown parser function: `build_lecture_from_md(title, content)`
 - Phase 2D wait markers and per-slide duration support in autopilot state
 - Phase 2E protected lecture-status API at `/api/lecture-status`
+- Phase 2F Telegram note-start integration using the enhanced parser
+- Phase 2F parsed Markdown slide rendering on the presenter page
 
 Important current limitations:
 
-- The presenter still shows the existing Phase 1 sample slide deck.
-- Telegram note-start integration is still scheduled for Phase 2F.
-- Lecture state is still stored in memory. Restarting the server clears the active session.
+- Lecture state is stored in memory. Restarting the server clears the active session.
+- Student participation features such as polls, student questions, and knowledge checks are prepared in slide data structures but are not active student UI features yet.
+- The presenter initially shows the built-in sample deck until a Markdown lecture is started through `/api/telegram-command` or a compatible payload is posted to `/api/start-lecture`.
 
 ## Requirements for laptop testing
 
@@ -113,9 +113,69 @@ test-password
 
 The command above uses `LECTURE_SLIDE_SECONDS='5'` so that automatic slide advance can be tested quickly. For normal classroom pacing later, use a larger value such as `75`.
 
-## Phase 2E test checklist
+## Phase 2 Markdown syntax
 
-Complete these tests on the laptop before moving to Phase 2F.
+Markdown remains the single source of truth for note-driven lectures.
+
+### Slides
+
+Each level-two heading starts a slide:
+
+```markdown
+## Big Idea
+Plants convert light energy into chemical energy stored as glucose.
+```
+
+### Local images
+
+Use image tokens with filenames only:
+
+```markdown
+{{image:photosynthesis-overview.svg}}
+```
+
+Media naming convention:
+
+- Put teacher-provided images in `media/images/`.
+- Reference only the filename in Markdown.
+- Use kebab-case names such as `cell-energy-diagram.png` or `photosynthesis-overview.svg`.
+- Do not use paths, raw URLs, `..`, or leading slashes in image tokens.
+
+### YouTube videos
+
+Use YouTube video IDs only:
+
+```markdown
+{{youtube:dQw4w9WgXcQ}}
+```
+
+The parser turns the token into an embedded YouTube iframe.
+
+### Wait markers
+
+Add a wait marker on a slide heading when autopilot should stop until a manual Next command:
+
+```markdown
+## Teacher Checkpoint {{wait}}
+Pause here and ask students to answer before moving on.
+```
+
+The app also accepts:
+
+```markdown
+## Discussion Pause {{pause-autopilot}}
+```
+
+Wait behavior:
+
+- Normal slides advance after their `duration`.
+- Wait slides stay on screen until the presenter presses Next or Hermes sends `Next slide`.
+- Wait markers are stripped from the visible slide heading.
+- `/api/lecture-status` reports `wait_mode: true` while the lecture is on a wait slide.
+
+## Phase 2F test checklist
+
+Complete these tests on the laptop before moving to Phase 3.
 
 ### 1. Confirm the app starts and login still works
 
@@ -124,12 +184,32 @@ Expected result:
 - Uvicorn starts without errors.
 - The browser opens `http://127.0.0.1:8000/`.
 - Login with `test-password` succeeds.
-- The sample lecture appears.
-- The badge says `Phase 2E`.
+- The initial sample presenter appears.
+- The badge says `Phase 2F`.
 
-### 2. Confirm automatic slide advance still works
+### 2. Start the enhanced sample note through the command endpoint
 
 Open a second terminal window in the same project folder and run:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
+  -d '{"text":"Start lecture on Photosynthesis using notes/sample-photosynthesis.md"}'
+```
+
+Expected result:
+
+- The JSON response says the lecture is ready.
+- Refresh `http://127.0.0.1:8000/` in the browser.
+- The presenter now renders slides from `notes/sample-photosynthesis.md`.
+- The slide deck includes the local image from `media/images/photosynthesis-overview.svg`.
+- The deck includes the embedded YouTube slide.
+- The Teacher Checkpoint slide does not show the raw `{{wait}}` marker in its heading.
+
+### 3. Begin the lecture and confirm timing / wait behavior
+
+Run:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
@@ -141,151 +221,27 @@ curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
 Expected result:
 
 - The presenter status changes to Running.
-- A normal slide advances automatically after about 5 seconds.
-- The Pause / Resume button and Telegram `Pause lecture` / `Resume lecture` commands still work.
-- The Previous / Next buttons still move slides manually through the backend WebSocket state.
+- Normal slides advance automatically after about 5 seconds.
+- The Teacher Checkpoint wait slide stays on screen.
+- Pressing the browser Next button or sending `Next slide` moves past the wait slide.
 
-### 3. Confirm Phase 2D parser wait markers
-
-Open a second terminal window in the project folder and run:
+To test the command version of manual advance, run:
 
 ```bash
-source .venv/bin/activate
-python3 - <<'PY'
-from app.main import build_lecture_from_md
-
-markdown = """# Cell Energy
-
-## Overview
-Cells need energy to do work.
-
-## Teacher Checkpoint {{wait}}
-Ask students to predict what happens next.
-
-## Video Example {{pause-autopilot}}
-{{youtube:dQw4w9WgXcQ}}
-"""
-
-lecture = build_lecture_from_md("Cell Energy", markdown)
-slides = lecture["slides"]
-
-assert len(slides) == 3
-assert slides[0]["heading"] == "Overview"
-assert slides[0]["wait"] is False
-assert slides[1]["heading"] == "Teacher Checkpoint"
-assert slides[1]["wait"] is True
-assert "{{wait}}" not in slides[1]["heading"]
-assert slides[2]["heading"] == "Video Example"
-assert slides[2]["wait"] is True
-assert "{{pause-autopilot}}" not in slides[2]["heading"]
-assert all(isinstance(slide["duration"], int) for slide in slides)
-
-print("Phase 2D parser wait-marker checks passed.")
-PY
+curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
+  -d '{"text":"Next slide"}'
 ```
 
-Expected result:
-
-```text
-Phase 2D parser wait-marker checks passed.
-```
-
-### 4. Confirm wait slides stop autopilot in backend state
+### 4. Confirm the lecture-status API sees the parsed lecture
 
 Run:
-
-```bash
-source .venv/bin/activate
-python3 - <<'PY'
-import asyncio
-import importlib
-import os
-
-os.environ["LECTURE_SLIDE_SECONDS"] = "0.05"
-import app.main as main
-main = importlib.reload(main)
-
-class FakeWebSocket:
-    def __init__(self):
-        self.messages = []
-    async def send_json(self, message):
-        self.messages.append(message)
-
-async def run_check():
-    _session_id, session_code = main.create_session()
-    websocket = FakeWebSocket()
-    main.WEBSOCKET_CONNECTIONS[session_code] = [websocket]
-    main.LECTURE_SESSIONS[session_code] = {
-        "title": "Wait Test",
-        "slides": [
-            {"heading": "Fast", "duration": 0.05, "wait": False},
-            {"heading": "Stop Here", "duration": 0.05, "wait": True},
-            {"heading": "After Wait", "duration": 0.05, "wait": False},
-            {"heading": "Extra", "duration": 0.05, "wait": False},
-            {"heading": "Done", "duration": 0.05, "wait": False},
-        ],
-        "narration": [],
-    }
-    main.LECTURE_RUNTIME_STATE[session_code] = "running"
-    main.LECTURE_CONTROL_STATE[session_code] = False
-    main.LECTURE_SLIDE_INDEX[session_code] = 0
-
-    task = asyncio.create_task(main.auto_advance_lecture(session_code))
-    await asyncio.sleep(0.2)
-    assert main.LECTURE_SLIDE_INDEX[session_code] == 1
-    assert any(message.get("is_waiting") is True for message in websocket.messages)
-
-    await main.advance_lecture_slide(session_code, 1)
-    await asyncio.sleep(0.12)
-    assert main.LECTURE_SLIDE_INDEX[session_code] >= 2
-
-    main.LECTURE_RUNTIME_STATE[session_code] = "ended"
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-asyncio.run(run_check())
-print("Phase 2D wait-slide autopilot checks passed.")
-PY
-```
-
-Expected result:
-
-```text
-Phase 2D wait-slide autopilot checks passed.
-```
-
-### 5. Confirm the lecture-status API is protected
-
-Without logging in, run:
-
-```bash
-curl -s -o /tmp/lecture-status-unauth.txt -w '%{http_code}' http://127.0.0.1:8000/api/lecture-status
-```
-
-Expected result:
-
-```text
-401
-```
-
-### 6. Confirm the lecture-status API works with a valid session
-
-Open a second terminal window in the project folder and run:
 
 ```bash
 curl -s -c /tmp/kvm-lecture-cookies.txt \
   -d 'password=test-password' \
   http://127.0.0.1:8000/login >/dev/null
-
-curl -s -b /tmp/kvm-lecture-cookies.txt \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Status Test","slides":[{"heading":"Overview","body":"<p>Cells need energy.</p>","duration":5,"wait":false,"media":[]},{"heading":"Image Check","body":"<p>Look at the diagram.</p>","duration":5,"wait":true,"media":[{"type":"image","value":"chloroplast.png","url":"/media/images/chloroplast.png"}]}],"narration":["Intro","Check image"]}' \
-  http://127.0.0.1:8000/api/start-lecture
-
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Begin lecture"}'
 
 curl -s -b /tmp/kvm-lecture-cookies.txt http://127.0.0.1:8000/api/lecture-status
 ```
@@ -293,26 +249,37 @@ curl -s -b /tmp/kvm-lecture-cookies.txt http://127.0.0.1:8000/api/lecture-status
 Expected result:
 
 - The status JSON includes `current_slide_index`, `current_slide`, `is_paused`, `wait_mode`, `time_on_slide_seconds`, `total_slides`, and `media_on_slide`.
-- `current_slide.heading` matches the active slide.
-- `time_on_slide_seconds` is a small number that increases while the lecture is active.
-- `media_on_slide` is a compact list and is empty on slides without media.
+- On an image or YouTube slide, `media_on_slide` identifies the media item.
+- On the Teacher Checkpoint slide, `wait_mode` is `true`.
 
-### 7. Confirm WebSocket timing fields still exist
+### 5. Confirm pause, resume, and end still work
 
-The backend now includes these fields in WebSocket control messages:
+Run each command as needed:
 
-```text
-is_waiting
-duration_remaining
-slide_duration
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
+  -d '{"text":"Pause lecture"}'
+
+curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
+  -d '{"text":"Resume lecture"}'
+
+curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+  -H 'Content-Type: application/json' \
+  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
+  -d '{"text":"End lecture"}'
 ```
 
-Expected result during the checks above:
+Expected result:
 
-- Normal slides report `is_waiting: false` and a countdown-style `duration_remaining`.
-- Wait slides report `is_waiting: true` and do not auto-advance until a next-slide command moves the lecture forward.
+- Pause stops automatic advancement.
+- Resume restarts automatic advancement.
+- End marks the lecture ended and stops autopilot.
 
-### 8. Confirm source files are not exposed through media URLs
+### 6. Confirm source files are not exposed through media URLs
 
 Open this address:
 
@@ -338,7 +305,7 @@ Ctrl+C
 If every item above works, reply:
 
 ```text
-Phase 2E tested — proceed to Phase 2F
+Phase 2F tested — proceed to Phase 3
 ```
 
 If something does not work, report:
@@ -348,4 +315,4 @@ If something does not work, report:
 - What actually happened
 - Any error text shown in the browser or terminal
 
-Do not proceed to Phase 2F until Phase 2E is tested successfully.
+Do not proceed to Phase 3 until Phase 2F is tested successfully.

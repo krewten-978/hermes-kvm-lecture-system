@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" role="img" aria-labelledby="title desc">
+  <title id="title">Photosynthesis overview diagram</title>
+  <desc id="desc">A simple classroom diagram showing sunlight, carbon dioxide, water, glucose, and oxygen around a plant.</desc>
+  <rect width="900" height="520" fill="#0f172a"/>
+  <circle cx="120" cy="100" r="54" fill="#fde047"/>
+  <g stroke="#fde68a" stroke-width="6" stroke-linecap="round">
+    <line x1="120" y1="20" x2="120" y2="0"/>
+    <line x1="120" y1="200" x2="120" y2="180"/>
+    <line x1="40" y1="100" x2="10" y2="100"/>
+    <line x1="230" y1="100" x2="200" y2="100"/>
+    <line x1="63" y1="43" x2="43" y2="23"/>
+    <line x1="177" y1="157" x2="197" y2="177"/>
+    <line x1="177" y1="43" x2="197" y2="23"/>
+    <line x1="63" y1="157" x2="43" y2="177"/>
+  </g>
+  <path d="M450 420 C450 350 450 290 450 215" stroke="#65a30d" stroke-width="18" stroke-linecap="round"/>
+  <ellipse cx="390" cy="270" rx="95" ry="44" fill="#22c55e" transform="rotate(-24 390 270)"/>
+  <ellipse cx="510" cy="260" rx="100" ry="46" fill="#16a34a" transform="rotate(22 510 260)"/>
+  <ellipse cx="405" cy="190" rx="80" ry="38" fill="#4ade80" transform="rotate(-18 405 190)"/>
+  <ellipse cx="500" cy="185" rx="84" ry="40" fill="#22c55e" transform="rotate(20 500 185)"/>
+  <rect x="250" y="420" width="400" height="54" rx="16" fill="#713f12"/>
+  <text x="450" y="80" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#e0f2fe">Photosynthesis</text>
+  <text x="240" y="135" font-family="Arial, sans-serif" font-size="28" fill="#fef3c7">Sunlight</text>
+  <path d="M240 150 C300 170 330 190 370 215" stroke="#fde047" stroke-width="8" fill="none" marker-end="url(#arrow)"/>
+  <text x="80" y="345" font-family="Arial, sans-serif" font-size="26" fill="#bae6fd">Water</text>
+  <path d="M170 340 C260 385 330 405 430 420" stroke="#38bdf8" stroke-width="8" fill="none" marker-end="url(#arrow)"/>
+  <text x="645" y="185" font-family="Arial, sans-serif" font-size="26" fill="#ddd6fe">Carbon dioxide</text>
+  <path d="M645 200 C590 205 560 215 520 235" stroke="#a78bfa" stroke-width="8" fill="none" marker-end="url(#arrow)"/>
+  <text x="610" y="340" font-family="Arial, sans-serif" font-size="26" fill="#bbf7d0">Oxygen</text>
+  <path d="M520 290 C575 315 600 325 670 330" stroke="#86efac" stroke-width="8" fill="none" marker-end="url(#arrow)"/>
+  <text x="330" y="500" font-family="Arial, sans-serif" font-size="24" fill="#fecaca">Glucose stores chemical energy</text>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="currentColor"/>
+    </marker>
+  </defs>
+</svg>

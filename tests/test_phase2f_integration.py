@@ -1,0 +1,115 @@
+import asyncio
+import importlib
+
+
+class FakeRequest:
+    def url_for(self, route_name):
+        assert route_name == "home"
+        return "http://testserver/"
+
+
+def load_main(monkeypatch, interval="0.05"):
+    monkeypatch.setenv("ADMIN_PASSWORD", "phase-test-password")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "phase-test-secret")
+    monkeypatch.setenv("LECTURE_SLIDE_SECONDS", interval)
+    import app.main as main
+    return importlib.reload(main)
+
+
+def create_active_session(main):
+    _session_id, session_code = main.create_session()
+    return session_code
+
+
+def test_telegram_start_using_notes_builds_rich_parsed_lecture(monkeypatch):
+    main = load_main(monkeypatch)
+    session_code = create_active_session(main)
+
+    payload = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+            session_code,
+        )
+    )
+
+    assert payload["ok"] is True
+    lecture = main.LECTURE_SESSIONS[session_code]
+    slides = lecture["slides"]
+
+    assert lecture["title"] == "Photosynthesis"
+    assert lecture["source"] == "notes/sample-photosynthesis.md"
+    assert lecture["source_markdown"] == main.read_note_file("sample-photosynthesis.md")
+    assert len(slides) >= 4
+    assert any(slide.get("wait") is True for slide in slides)
+    assert any(media.get("type") == "image" for slide in slides for media in slide.get("media", []))
+    assert any(media.get("type") == "youtube" for slide in slides for media in slide.get("media", []))
+    assert all("poll" in slide and "knowledge_check" in slide for slide in slides)
+
+
+def test_presenter_page_renders_parsed_note_media_after_telegram_start(monkeypatch):
+    main = load_main(monkeypatch)
+    session_id, session_code = main.create_session()
+
+    command_payload = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+            session_code,
+        )
+    )
+    assert command_payload["ok"] is True
+
+    page_response = main.home(session_id)
+    body = page_response.body.decode("utf-8")
+
+    assert page_response.status_code == 200
+    assert "Phase 2F" in body
+    assert "/media/images/" in body
+    assert "https://www.youtube.com/embed/" in body
+    assert "data-wait=\"true\"" in body
+
+
+def test_phase2f_sample_note_contains_required_markdown_tokens(monkeypatch):
+    main = load_main(monkeypatch)
+    sample = main.read_note_file("sample-photosynthesis.md") or ""
+
+    assert "{{image:" in sample
+    assert "{{youtube:" in sample
+    assert "{{wait}}" in sample or "{{pause-autopilot}}" in sample
+
+
+def test_telegram_started_parsed_lecture_waits_then_advances_manually(monkeypatch):
+    main = load_main(monkeypatch, interval="0.01")
+    session_code = create_active_session(main)
+
+    response = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+            session_code,
+        )
+    )
+    assert response["ok"] is True
+
+    wait_index = next(
+        index
+        for index, slide in enumerate(main.LECTURE_SESSIONS[session_code]["slides"])
+        if slide.get("wait") is True
+    )
+    main.LECTURE_SLIDE_INDEX[session_code] = max(wait_index - 1, 0)
+    main.LECTURE_RUNTIME_STATE[session_code] = "running"
+    main.LECTURE_CONTROL_STATE[session_code] = False
+
+    async def run_check():
+        task = asyncio.create_task(main.auto_advance_lecture(session_code))
+        await asyncio.sleep(0.08)
+        assert main.LECTURE_SLIDE_INDEX[session_code] == wait_index
+        assert main.build_lecture_status(session_code)["wait_mode"] is True
+        await main.advance_lecture_slide(session_code, 1)
+        assert main.LECTURE_SLIDE_INDEX[session_code] == wait_index + 1
+        main.LECTURE_RUNTIME_STATE[session_code] = "ended"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run_check())
