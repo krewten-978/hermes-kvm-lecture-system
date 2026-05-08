@@ -2,9 +2,9 @@
 
 A FastAPI + Reveal.js classroom lecture presenter for Wayne's high-school classroom.
 
-Current status: Phase 2F complete with Phase 2F retest fixes for presenter-session targeting.
+Current status: Phase 3A complete.
 
-Phase 2F wires the Phase 2 Markdown parser into Telegram/direct lecture-start commands, updates the sample Photosynthesis note with image, YouTube, and wait-marker examples, renders parsed note slides on the presenter page, and documents the Phase 2 Markdown syntax. The Phase 2F retest fix also keeps direct curl commands attached to the visible browser presenter when a separate curl login is used for `/api/lecture-status`.
+Phase 3A adds the student session and connection foundation for live participation. Students can join an active presenter session with the session code through `POST /api/join`, receive a student token, and connect to `/ws/student`. The presenter WebSocket and `/api/lecture-status` now include `student_count` while all Phase 1 and Phase 2 presenter, Markdown, media, timing, and command behavior remains in place.
 
 Repository:
 
@@ -33,11 +33,14 @@ The app currently includes:
 - Phase 2E protected lecture-status API at `/api/lecture-status`
 - Phase 2F Telegram note-start integration using the enhanced parser
 - Phase 2F parsed Markdown slide rendering on the presenter page
+- Phase 3A student join endpoint at `POST /api/join`
+- Phase 3A student WebSocket endpoint at `/ws/student`
+- Phase 3A student connection count in presenter WebSocket messages and `/api/lecture-status`
 
 Important current limitations:
 
 - Lecture state is stored in memory. Restarting the server clears the active session.
-- Student participation features such as polls, student questions, and knowledge checks are prepared in slide data structures but are not active student UI features yet.
+- Student participation Phase 3A currently tracks joined/connected students only. Student-facing pages, questions, polls, knowledge checks, and dashboards come in later Phase 3 sub-phases.
 - The presenter initially shows the built-in sample deck until a Markdown lecture is started through `/api/telegram-command` or a compatible payload is posted to `/api/start-lecture`.
 
 ## Requirements for laptop testing
@@ -173,9 +176,9 @@ Wait behavior:
 - Wait markers are stripped from the visible slide heading.
 - `/api/lecture-status` reports `wait_mode: true` while the lecture is on a wait slide.
 
-## Phase 2F test checklist
+## Phase 3A test checklist
 
-Complete these tests on the laptop before moving to Phase 3.
+Complete these tests on the laptop before moving to Phase 3B.
 
 ### 1. Confirm the app starts and login still works
 
@@ -184,60 +187,52 @@ Expected result:
 - Uvicorn starts without errors.
 - The browser opens `http://127.0.0.1:8000/`.
 - Login with `test-password` succeeds.
-- The browser shows a one-slide `No lecture loaded` placeholder, not the old 5-slide Photosynthesis sample deck.
-- The badge says `Phase 2F`.
+- The browser shows a one-slide `No lecture loaded` placeholder if no Markdown lecture has been started.
+- The badge says `Phase 3A` and shows the presenter session code.
 
-### 2. Start the enhanced sample note through the command endpoint
+### 2. Confirm a student can join with the session code
 
-Open a second terminal window in the same project folder and run:
+Use the session code shown in the presenter badge. In a second terminal, replace `ABC123` below with that code:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
+curl -s -X POST http://127.0.0.1:8000/api/join \
   -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Start lecture on Photosynthesis using notes/sample-photosynthesis.md"}'
+  -d '{"session_code":"ABC123"}'
 ```
 
 Expected result:
 
-- The JSON response says the lecture is ready.
-- Refresh `http://127.0.0.1:8000/` in the browser if it does not reload automatically.
-- The presenter now renders slides from `notes/sample-photosynthesis.md`.
-- The slide deck includes the local image from `media/images/photosynthesis-overview.svg`.
-- The deck includes the embedded YouTube slide.
-- The YouTube iframe URL includes autoplay parameters; most browsers require it to start muted.
-- The Teacher Checkpoint slide does not show the raw `{{wait}}` marker in its heading.
+- The response returns the normalized `session_code`.
+- The response includes a `student_token`.
+- A bad or made-up session code returns `404` instead of joining a lecture.
 
-### 3. Begin the lecture and confirm timing / wait behavior
+### 3. Confirm connected students are counted
 
-Run:
+After a student joins, use the returned `student_token` to open a student WebSocket. One simple command-line test is:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Begin lecture"}'
+python - <<'PY'
+import json
+import sys
+import websocket
+
+token = sys.argv[1] if len(sys.argv) > 1 else 'PASTE_STUDENT_TOKEN_HERE'
+ws = websocket.create_connection(f'ws://127.0.0.1:8000/ws/student?token={token}')
+print(json.dumps(json.loads(ws.recv()), indent=2))
+input('Student socket is connected. Press Enter to disconnect...')
+ws.close()
+PY
 ```
 
 Expected result:
 
-- The presenter status changes to Running.
-- Normal slides advance automatically after about 5 seconds.
-- The Teacher Checkpoint wait slide stays on screen.
-- Pressing the browser Next button or sending `Next slide` moves past the wait slide.
-- When the presenter reaches the YouTube slide, autonomous advancement pauses so students have time to watch.
-- Send `Resume lecture` after the video discussion/watch time to continue automatic timing from that slide.
+- The first WebSocket message has `type: student_state`.
+- The message includes the correct `session_code`.
+- While the socket is connected, the presenter control state reports `student_count: 1`.
 
-To test the command version of manual advance, run:
+If the `websocket` Python package is not installed on your laptop, you can skip this command-line socket test and use the API/status test below for this phase.
 
-```bash
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Next slide"}'
-```
-
-### 4. Confirm the lecture-status API sees the parsed lecture
+### 4. Confirm `/api/lecture-status` includes student count
 
 Run:
 
@@ -251,50 +246,22 @@ curl -s -b /tmp/kvm-lecture-cookies.txt http://127.0.0.1:8000/api/lecture-status
 
 Expected result:
 
-- The status JSON includes `current_slide_index`, `current_slide`, `is_paused`, `wait_mode`, `time_on_slide_seconds`, `total_slides`, and `media_on_slide`.
-- On an image or YouTube slide, `media_on_slide` identifies the media item.
-- On the Teacher Checkpoint slide, `wait_mode` is `true`.
+- The status JSON still includes Phase 2 fields such as `current_slide_index`, `current_slide`, `wait_mode`, `total_slides`, and `media_on_slide`.
+- The status JSON now also includes `student_count`.
+- Existing presenter controls, Markdown lecture start commands, media, wait slides, and pause/resume behavior still work.
 
-### 5. Confirm pause, resume, and end still work
+### 5. Confirm invalid student WebSocket tokens are rejected
 
-Run each command as needed:
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Pause lecture"}'
-
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"Resume lecture"}'
-
-curl -s -X POST http://127.0.0.1:8000/api/telegram-command \
-  -H 'Content-Type: application/json' \
-  -H 'X-Hermes-Telegram-Secret: test-telegram-secret' \
-  -d '{"text":"End lecture"}'
-```
-
-Expected result:
-
-- Pause stops automatic advancement.
-- Resume restarts automatic advancement on the visible browser presenter, even after the separate `/api/lecture-status` curl login above.
-- If the current slide is the Teacher Checkpoint wait slide, Resume will return the deck to running state but will intentionally keep waiting there until you use `Next slide` or the browser Next button.
-- End marks the lecture ended and stops autopilot.
-
-### 6. Confirm source files are not exposed through media URLs
-
-Open this address:
+Open this WebSocket path with an invalid token if you have a WebSocket tool available:
 
 ```text
-http://127.0.0.1:8000/media/../app/main.py
+ws://127.0.0.1:8000/ws/student?token=bad-token
 ```
 
 Expected result:
 
-- The app should not show the Python source file.
-- A `404 Not Found` response is expected.
+- The connection is rejected.
+- The presenter WebSocket at `/ws/session` is unaffected.
 
 ## Stopping the app
 
@@ -309,7 +276,7 @@ Ctrl+C
 If every item above works, reply:
 
 ```text
-Phase 2F tested — proceed to Phase 3
+Phase 3A tested — proceed to Phase 3B
 ```
 
 If something does not work, report:
@@ -319,4 +286,4 @@ If something does not work, report:
 - What actually happened
 - Any error text shown in the browser or terminal
 
-Do not proceed to Phase 3 until Phase 2F is tested successfully.
+Do not proceed to Phase 3B until Phase 3A is tested successfully.

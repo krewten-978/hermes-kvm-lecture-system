@@ -72,7 +72,7 @@ def test_presenter_page_renders_parsed_note_media_after_telegram_start(monkeypat
     body = page_response.body.decode("utf-8")
 
     assert page_response.status_code == 200
-    assert "Phase 2F" in body
+    assert "Phase 3A" in body
     assert "/media/images/" in body
     assert "https://www.youtube.com/embed/" in body
     assert "data-wait=\"true\"" in body

@@ -37,11 +37,13 @@ LECTURE_REVISION: dict[str, int] = {}
 LECTURE_AUTONOMOUS_TASKS: dict[str, asyncio.Task[None]] = {}
 LECTURE_AUTO_PAUSED_SLIDES: set[tuple[str, int]] = set()
 WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
+STUDENT_SESSIONS: dict[str, dict[str, object]] = {}
+STUDENT_CONNECTIONS: dict[str, dict[str, list[WebSocket]]] = {}
 
 app = FastAPI(
     title="Hermes KVM Lecture System",
     description="A classroom lecture presenter controlled by Hermes.",
-    version="0.9.7",
+    version="0.9.8",
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -76,6 +78,56 @@ def get_session_code(session_id: str | None) -> str | None:
     if not session_id:
         return None
     return SESSIONS.get(session_id)
+
+
+def normalize_session_code(session_code: object) -> str:
+    """Normalize a human-entered session code for student join requests."""
+    return str(session_code or "").strip().upper()
+
+
+def create_student_token(session_code: str) -> str:
+    """Create a student token bound to a live presenter session code."""
+    token = secrets.token_urlsafe(24)
+    STUDENT_SESSIONS[token] = {"session_code": session_code, "joined_at": time.time()}
+    return token
+
+
+def get_student_session_code(student_token: str | None) -> str | None:
+    """Return the session code for a previously issued student token."""
+    if not student_token:
+        return None
+    student_session = STUDENT_SESSIONS.get(student_token)
+    if not student_session:
+        return None
+    session_code = student_session.get("session_code")
+    if not isinstance(session_code, str) or session_code not in SESSIONS.values():
+        return None
+    return session_code
+
+
+def get_connected_student_count(session_code: str) -> int:
+    """Return how many student WebSockets are currently connected."""
+    token_connections = STUDENT_CONNECTIONS.get(session_code, {})
+    return sum(1 for connections in token_connections.values() if connections)
+
+
+def remove_student_session(session_code: str, student_token: str) -> None:
+    """Remove a student token and any tracked WebSocket connections for a session."""
+    STUDENT_SESSIONS.pop(student_token, None)
+    session_connections = STUDENT_CONNECTIONS.get(session_code)
+    if not session_connections:
+        return
+    session_connections.pop(student_token, None)
+    if not session_connections:
+        STUDENT_CONNECTIONS.pop(session_code, None)
+
+
+def remove_all_student_sessions(session_code: str) -> None:
+    """Clear all student tokens and connections for a presenter session."""
+    for token, student_session in list(STUDENT_SESSIONS.items()):
+        if student_session.get("session_code") == session_code:
+            STUDENT_SESSIONS.pop(token, None)
+    STUDENT_CONNECTIONS.pop(session_code, None)
 
 
 def login_required_redirect(session_id: str | None) -> str | RedirectResponse:
@@ -473,6 +525,7 @@ def build_lecture_status(session_code: str) -> dict[str, object]:
         "time_on_slide_seconds": round(get_time_on_slide(session_code), 2),
         "total_slides": len(session_slides) if session_slides else PRESENTER_SLIDE_COUNT,
         "media_on_slide": media,
+        "student_count": get_connected_student_count(session_code),
     }
 
 
@@ -489,6 +542,7 @@ def build_control_message(session_code: str, message_type: str = "control_state"
         "slide_seconds": LECTURE_SLIDE_SECONDS,
         "slide_duration": current_duration,
         "lecture_revision": LECTURE_REVISION.get(session_code, 0),
+        "student_count": get_connected_student_count(session_code),
         "is_waiting": is_current_slide_waiting(session_code),
         "duration_remaining": round(get_duration_remaining(session_code), 2),
     }
@@ -788,6 +842,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
             LECTURE_SLIDE_STARTED_AT.pop(session_code, None)
             LECTURE_REVISION.pop(session_code, None)
             LECTURE_AUTO_PAUSED_SLIDES.difference_update({key for key in LECTURE_AUTO_PAUSED_SLIDES if key[0] == session_code})
+            remove_all_student_sessions(session_code)
             task = LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
             if task and not task.done():
                 task.cancel()
@@ -798,7 +853,7 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
 
 @app.get("/", response_class=HTMLResponse)
 def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
-    """Render the protected Phase 2F Reveal.js lecture page."""
+    """Render the protected Phase 3A Reveal.js lecture page."""
     session_code_or_redirect = login_required_redirect(hermes_session_id)
     if isinstance(session_code_or_redirect, RedirectResponse):
         return session_code_or_redirect
@@ -831,7 +886,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
       </head>
       <body class="bg-slate-950 text-white" data-lecture-revision="{LECTURE_REVISION.get(session_code, 0)}">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
-          Hermes Lecture System • Phase 2F • Session {session_code}
+          Hermes Lecture System • Phase 3A • Session {session_code}
         </div>
 
         <form method="post" action="/logout" class="fixed right-4 top-4 z-50">
@@ -892,6 +947,63 @@ def lecture_status(hermes_session_id: Annotated[str | None, Cookie()] = None) ->
     if not session_code:
         return JSONResponse({"detail": "Not authenticated"}, status_code=status.HTTP_401_UNAUTHORIZED)
     return JSONResponse(build_lecture_status(session_code))
+
+
+@app.post("/api/join")
+async def student_join(request: Request) -> JSONResponse:
+    """Allow a student device to join a live presenter session by code."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Expected JSON body"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not isinstance(payload, dict):
+        return JSONResponse({"detail": "Expected JSON object"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    session_code = normalize_session_code(payload.get("session_code"))
+    if not session_code:
+        return JSONResponse({"detail": "Field 'session_code' is required"}, status_code=status.HTTP_400_BAD_REQUEST)
+    if session_code not in SESSIONS.values():
+        return JSONResponse({"detail": "Lecture session not found"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    student_token = create_student_token(session_code)
+    return JSONResponse({"session_code": session_code, "student_token": student_token})
+
+
+@app.websocket("/ws/student")
+async def websocket_student(websocket: WebSocket) -> None:
+    """Student WebSocket for Phase 3A join tracking."""
+    student_token = websocket.query_params.get("token")
+    session_code = get_student_session_code(student_token)
+    if not student_token or not session_code:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    STUDENT_CONNECTIONS.setdefault(session_code, {}).setdefault(student_token, []).append(websocket)
+    await websocket.send_json({"type": "student_state", "session_code": session_code, "lecture": build_control_message(session_code)})
+    await broadcast_control_state(session_code)
+
+    try:
+        while True:
+            await websocket.receive_json()
+            await websocket.send_json({"type": "student_state", "session_code": session_code, "lecture": build_control_message(session_code)})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        session_connections = STUDENT_CONNECTIONS.get(session_code, {})
+        token_connections = session_connections.get(student_token, [])
+        if websocket in token_connections:
+            token_connections.remove(websocket)
+        if token_connections:
+            session_connections[student_token] = token_connections
+        else:
+            session_connections.pop(student_token, None)
+        if session_connections:
+            STUDENT_CONNECTIONS[session_code] = session_connections
+        else:
+            STUDENT_CONNECTIONS.pop(session_code, None)
+        await broadcast_control_state(session_code)
 
 
 @app.websocket("/ws/session")
