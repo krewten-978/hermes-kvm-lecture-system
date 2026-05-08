@@ -88,10 +88,12 @@ function applySlideAdvance(slideIndex) {
 
 function reloadIfPresenterDeckChanged(message) {
   const serverSlideCount = Number(message.slide_count);
+  const serverRevision = Number(message.lecture_revision);
+  const browserRevision = Number(document.body.dataset.lectureRevision || "0");
   if (message.state !== "ready" || !Number.isInteger(serverSlideCount)) {
     return;
   }
-  if (serverSlideCount !== getSlides().length) {
+  if (serverSlideCount !== getSlides().length || (Number.isInteger(serverRevision) && serverRevision !== browserRevision)) {
     window.location.reload();
   }
 }

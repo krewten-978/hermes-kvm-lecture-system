@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 LECTURE_SLIDE_SECONDS = float(os.getenv("LECTURE_SLIDE_SECONDS", "75"))
-PRESENTER_SLIDE_COUNT = 5
+PRESENTER_SLIDE_COUNT = 1
 SESSION_COOKIE_NAME = "hermes_session_id"
 NOTES_DIR = Path("notes").resolve()
 MEDIA_DIR = Path("media").resolve()
@@ -33,7 +33,9 @@ LECTURE_CONTROL_STATE: dict[str, bool] = {}
 LECTURE_RUNTIME_STATE: dict[str, str] = {}
 LECTURE_SLIDE_INDEX: dict[str, int] = {}
 LECTURE_SLIDE_STARTED_AT: dict[str, float] = {}
+LECTURE_REVISION: dict[str, int] = {}
 LECTURE_AUTONOMOUS_TASKS: dict[str, asyncio.Task[None]] = {}
+LECTURE_AUTO_PAUSED_SLIDES: set[tuple[str, int]] = set()
 WEBSOCKET_CONNECTIONS: dict[str, list[WebSocket]] = {}
 
 app = FastAPI(
@@ -165,9 +167,9 @@ def replace_media_tokens(markdown_text: str) -> tuple[str, list[dict[str, str]]]
         if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", video_id):
             print(f"Rejected YouTube video ID: {video_id!r}")
             return ""
-        embed_url = f"https://www.youtube.com/embed/{quote(video_id)}"
+        embed_url = f"https://www.youtube.com/embed/{quote(video_id)}?autoplay=1&mute=1&rel=0&playsinline=1"
         media.append({"type": "youtube", "value": video_id, "url": embed_url})
-        return f'<iframe src="{embed_url}" width="100%" height="500" allowfullscreen></iframe>'
+        return f'<iframe src="{embed_url}" width="100%" height="500" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>'
 
     with_images = re.sub(r"\{\{image:([^}]+)\}\}", replace_image, markdown_text)
     with_videos = re.sub(r"\{\{youtube:([^}]+)\}\}", replace_youtube, with_images)
@@ -196,6 +198,7 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
                 "narration": f"Begin the lecture on {cleaned_title}.",
                 "duration": int(LECTURE_SLIDE_SECONDS),
                 "wait": False,
+                "pause_on_enter": False,
                 "media": [],
                 "poll": None,
                 "knowledge_check": None,
@@ -215,6 +218,7 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
                     "narration": re.sub(r"\{\{[^}]+\}\}", "", markdown).strip() or cleaned_title,
                     "duration": int(LECTURE_SLIDE_SECONDS),
                     "wait": False,
+                    "pause_on_enter": any(item.get("type") == "youtube" for item in media),
                     "media": media,
                     "poll": None,
                     "knowledge_check": None,
@@ -236,6 +240,7 @@ def build_lecture_from_md(title: str, content: str | None) -> dict[str, object]:
                         "narration": narration,
                         "duration": int(LECTURE_SLIDE_SECONDS),
                         "wait": wait_for_manual_advance,
+                        "pause_on_enter": any(item.get("type") == "youtube" for item in media),
                         "media": media,
                         "poll": None,
                         "knowledge_check": None,
@@ -388,6 +393,29 @@ def is_current_slide_waiting(session_code: str) -> bool:
     return bool(get_current_slide(session_code).get("wait"))
 
 
+def is_current_slide_pause_on_enter(session_code: str) -> bool:
+    """Return whether the current slide should pause once after it appears."""
+    return bool(get_current_slide(session_code).get("pause_on_enter"))
+
+
+async def pause_current_slide_on_entry_if_needed(session_code: str) -> bool:
+    """Pause once when a media slide first appears so the teacher controls resume."""
+    current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
+    pause_key = (session_code, current_index)
+    if not is_current_slide_pause_on_enter(session_code) or pause_key in LECTURE_AUTO_PAUSED_SLIDES:
+        return False
+    LECTURE_AUTO_PAUSED_SLIDES.add(pause_key)
+    LECTURE_CONTROL_STATE[session_code] = True
+    mark_slide_started(session_code)
+    await broadcast_control_state(session_code)
+    return True
+
+
+def clear_auto_paused_slide_entry(session_code: str, slide_index: int) -> None:
+    """Allow a media slide to pause again if the teacher leaves and later returns."""
+    LECTURE_AUTO_PAUSED_SLIDES.discard((session_code, slide_index))
+
+
 def mark_slide_started(session_code: str) -> None:
     """Record when the current slide became active for duration tracking."""
     LECTURE_SLIDE_STARTED_AT[session_code] = time.monotonic()
@@ -460,6 +488,7 @@ def build_control_message(session_code: str, message_type: str = "control_state"
         "slide_count": get_slide_count(session_code),
         "slide_seconds": LECTURE_SLIDE_SECONDS,
         "slide_duration": current_duration,
+        "lecture_revision": LECTURE_REVISION.get(session_code, 0),
         "is_waiting": is_current_slide_waiting(session_code),
         "duration_remaining": round(get_duration_remaining(session_code), 2),
     }
@@ -525,9 +554,11 @@ async def auto_advance_lecture(session_code: str) -> None:
             await broadcast_control_state(session_code)
             break
 
+        clear_auto_paused_slide_entry(session_code, current_index)
         LECTURE_SLIDE_INDEX[session_code] = current_index + 1
         mark_slide_started(session_code)
         await broadcast_control_state(session_code, message_type="slide_advance")
+        await pause_current_slide_on_entry_if_needed(session_code)
 
     task = LECTURE_AUTONOMOUS_TASKS.get(session_code)
     if task is asyncio.current_task():
@@ -539,9 +570,13 @@ async def advance_lecture_slide(session_code: str, step: int) -> int:
     slide_count = get_slide_count(session_code)
     current_index = LECTURE_SLIDE_INDEX.get(session_code, 0)
     next_index = min(max(current_index + step, 0), max(slide_count - 1, 0))
+    if next_index != current_index:
+        clear_auto_paused_slide_entry(session_code, current_index)
     LECTURE_SLIDE_INDEX[session_code] = next_index
     mark_slide_started(session_code)
     await broadcast_control_state(session_code, message_type="slide_advance")
+    if LECTURE_RUNTIME_STATE.get(session_code) == "running" and next_index != current_index:
+        await pause_current_slide_on_entry_if_needed(session_code)
     return next_index
 
 
@@ -572,6 +607,8 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
             lecture_payload = build_lecture_from_md(title, None)
             lecture_payload["source"] = "telegram"
         LECTURE_SESSIONS[session_code] = lecture_payload
+        LECTURE_REVISION[session_code] = LECTURE_REVISION.get(session_code, 0) + 1
+        LECTURE_AUTO_PAUSED_SLIDES.difference_update({key for key in LECTURE_AUTO_PAUSED_SLIDES if key[0] == session_code})
         LECTURE_RUNTIME_STATE[session_code] = "ready"
         LECTURE_CONTROL_STATE[session_code] = False
         LECTURE_SLIDE_INDEX[session_code] = 0
@@ -590,6 +627,7 @@ async def apply_telegram_command(command_text: str, request: Request, requested_
 
     if normalized in {"begin lecture", "/begin", "begin"}:
         LECTURE_RUNTIME_STATE[session_code] = "running"
+        LECTURE_AUTO_PAUSED_SLIDES.difference_update({key for key in LECTURE_AUTO_PAUSED_SLIDES if key[0] == session_code})
         LECTURE_CONTROL_STATE[session_code] = False
         LECTURE_SLIDE_INDEX[session_code] = 0
         mark_slide_started(session_code)
@@ -653,7 +691,8 @@ def render_slide_section(slide: dict[str, object]) -> str:
     body = str(slide.get("body", ""))
     narration = escape(str(slide.get("narration", "")), quote=True)
     wait_attr = ' data-wait="true"' if slide.get("wait") is True else ""
-    return f'<section data-notes="{narration}"{wait_attr}>\n<h2>{heading}</h2>\n{body}\n</section>'
+    pause_attr = ' data-pause-on-enter="true"' if slide.get("pause_on_enter") is True else ""
+    return f'<section data-notes="{narration}"{wait_attr}{pause_attr}>\n<h2>{heading}</h2>\n{body}\n</section>'
 
 
 def render_active_lecture_slides(session_code: str) -> str | None:
@@ -670,7 +709,7 @@ def get_initial_teleprompter_text(session_code: str) -> str:
     narration = first_slide.get("narration") if first_slide else None
     if isinstance(narration, str) and narration.strip():
         return narration.strip()
-    return "Welcome students. Today we are learning how plants make their own food."
+    return "No lecture has been loaded yet. Start a Markdown lecture when you are ready."
 
 
 def login_page(error: str = "") -> str:
@@ -747,6 +786,8 @@ def logout(hermes_session_id: Annotated[str | None, Cookie()] = None) -> Redirec
             LECTURE_RUNTIME_STATE.pop(session_code, None)
             LECTURE_SLIDE_INDEX.pop(session_code, None)
             LECTURE_SLIDE_STARTED_AT.pop(session_code, None)
+            LECTURE_REVISION.pop(session_code, None)
+            LECTURE_AUTO_PAUSED_SLIDES.difference_update({key for key in LECTURE_AUTO_PAUSED_SLIDES if key[0] == session_code})
             task = LECTURE_AUTONOMOUS_TASKS.pop(session_code, None)
             if task and not task.done():
                 task.cancel()
@@ -765,37 +806,10 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
 
     active_slides_markup = render_active_lecture_slides(session_code)
     static_slides_markup = """
-            <section data-notes="Welcome students. Today we are learning how plants make their own food. Start by emphasizing that photosynthesis is one of the most important processes for life on Earth." data-background-gradient="linear-gradient(135deg, #0f172a, #164e63)">
-              <h1>Photosynthesis</h1>
-              <p class="text-cyan-200">How plants turn light into food</p>
-              <p class="mt-8 text-3xl">Sample lecture powered by Reveal.js</p>
-            </section>
-            <section data-notes="The big idea is energy conversion. Plants capture light energy and store it as chemical energy in glucose. Keep this slide slow and clear.">
-              <h2>Big Idea</h2>
-              <p>Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen.</p>
-              <p class="mt-8 rounded-2xl bg-cyan-900/40 p-6 text-cyan-100">Light energy becomes chemical energy.</p>
-            </section>
-            <section data-notes="Walk through the inputs one at a time. Sunlight is captured by chlorophyll, water enters through roots, and carbon dioxide enters through tiny openings in leaves.">
-              <h2>What Plants Need</h2>
-              <ul>
-                <li>Sunlight</li>
-                <li>Water from the roots</li>
-                <li>Carbon dioxide from the air</li>
-                <li>Chlorophyll inside chloroplasts</li>
-              </ul>
-            </section>
-            <section data-notes="Explain that glucose is useful to the plant as stored energy. Oxygen is released as a byproduct, but that byproduct is essential for animals and humans.">
-              <h2>The Products</h2>
-              <p>Plants produce:</p>
-              <ul>
-                <li><strong>Glucose</strong> — stored chemical energy</li>
-                <li><strong>Oxygen</strong> — released into the atmosphere</li>
-              </ul>
-            </section>
-            <section data-notes="Close by connecting photosynthesis to food chains and breathable oxygen. Let students know that Phase 2F can now guide the lecture from Markdown notes.">
-              <h2>Why It Matters</h2>
-              <p>Photosynthesis supports most food chains and helps maintain oxygen in Earth’s atmosphere.</p>
-              <p class="mt-8 text-cyan-200">Phase 2F: Markdown notes can drive media, timing, and wait behavior.</p>
+            <section data-notes="No lecture has been loaded yet. Use a Start lecture command with a notes file, then begin when students are ready." data-background-gradient="linear-gradient(135deg, #0f172a, #334155)">
+              <h1>No lecture loaded</h1>
+              <p class="text-cyan-200">Start a Markdown lecture from Hermes or the command endpoint.</p>
+              <p class="mt-8 text-3xl">This placeholder prevents duplicate sample decks from appearing.</p>
             </section>
     """
     slides_markup = active_slides_markup or static_slides_markup
@@ -815,7 +829,7 @@ def home(hermes_session_id: Annotated[str | None, Cookie()] = None):
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" />
         <link rel="stylesheet" href="/static/css/site.css" />
       </head>
-      <body class="bg-slate-950 text-white">
+      <body class="bg-slate-950 text-white" data-lecture-revision="{LECTURE_REVISION.get(session_code, 0)}">
         <div class="fixed left-4 top-4 z-50 rounded-full border border-cyan-400/40 bg-slate-950/80 px-4 py-2 text-sm font-semibold uppercase tracking-[0.25em] text-cyan-200">
           Hermes Lecture System • Phase 2F • Session {session_code}
         </div>
@@ -991,6 +1005,8 @@ async def start_lecture(request: Request, hermes_session_id: Annotated[str | Non
         "narration": narration,
     }
     LECTURE_SESSIONS[session_code] = lecture
+    LECTURE_REVISION[session_code] = LECTURE_REVISION.get(session_code, 0) + 1
+    LECTURE_AUTO_PAUSED_SLIDES.difference_update({key for key in LECTURE_AUTO_PAUSED_SLIDES if key[0] == session_code})
     LECTURE_RUNTIME_STATE[session_code] = "ready"
     LECTURE_CONTROL_STATE[session_code] = False
     LECTURE_SLIDE_INDEX[session_code] = 0

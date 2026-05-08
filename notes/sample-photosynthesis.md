@@ -20,7 +20,7 @@ After students answer, use Next slide to continue.
 ## Video Connection
 Watch a short explanation of photosynthesis.
 
-{{youtube:dQw4w9WgXcQ}}
+{{youtube:UPBMG5EYydo}}
 
 ## Lecture Guidance
 Use these notes to explain how sunlight, water, and carbon dioxide become glucose and oxygen.

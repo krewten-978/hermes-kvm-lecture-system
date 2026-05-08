@@ -146,10 +146,10 @@ Media naming convention:
 Use YouTube video IDs only:
 
 ```markdown
-{{youtube:dQw4w9WgXcQ}}
+{{youtube:UPBMG5EYydo}}
 ```
 
-The parser turns the token into an embedded YouTube iframe.
+The parser turns the token into an embedded YouTube iframe. YouTube slides autoplay muted when the browser allows it and pause autonomous advancement when the slide appears. After students have had time to watch, use `Resume lecture` to continue automatic timing.
 
 ### Wait markers
 
@@ -184,7 +184,7 @@ Expected result:
 - Uvicorn starts without errors.
 - The browser opens `http://127.0.0.1:8000/`.
 - Login with `test-password` succeeds.
-- The initial sample presenter appears.
+- The browser shows a one-slide `No lecture loaded` placeholder, not the old 5-slide Photosynthesis sample deck.
 - The badge says `Phase 2F`.
 
 ### 2. Start the enhanced sample note through the command endpoint
@@ -205,6 +205,7 @@ Expected result:
 - The presenter now renders slides from `notes/sample-photosynthesis.md`.
 - The slide deck includes the local image from `media/images/photosynthesis-overview.svg`.
 - The deck includes the embedded YouTube slide.
+- The YouTube iframe URL includes autoplay parameters; most browsers require it to start muted.
 - The Teacher Checkpoint slide does not show the raw `{{wait}}` marker in its heading.
 
 ### 3. Begin the lecture and confirm timing / wait behavior
@@ -224,6 +225,8 @@ Expected result:
 - Normal slides advance automatically after about 5 seconds.
 - The Teacher Checkpoint wait slide stays on screen.
 - Pressing the browser Next button or sending `Next slide` moves past the wait slide.
+- When the presenter reaches the YouTube slide, autonomous advancement pauses so students have time to watch.
+- Send `Resume lecture` after the video discussion/watch time to continue automatic timing from that slide.
 
 To test the command version of manual advance, run:
 

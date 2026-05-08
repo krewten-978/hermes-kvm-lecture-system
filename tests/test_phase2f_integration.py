@@ -124,6 +124,94 @@ def test_phase2f_sample_note_contains_required_markdown_tokens(monkeypatch):
     assert "{{wait}}" in sample or "{{pause-autopilot}}" in sample
 
 
+def test_fresh_presenter_does_not_render_duplicate_photosynthesis_fallback_deck(monkeypatch):
+    main = load_main(monkeypatch)
+    session_id, _session_code = main.create_session()
+
+    page_response = main.home(session_id)
+    body = page_response.body.decode("utf-8")
+
+    assert page_response.status_code == 200
+    assert "<h1>Photosynthesis</h1>" not in body
+    assert "Sample lecture powered by Reveal.js" not in body
+    assert "Slide 1 of 5" not in body
+    assert "No lecture loaded" in body
+
+
+def test_restarting_same_slide_count_lecture_increments_presenter_revision(monkeypatch):
+    main = load_main(monkeypatch)
+    session_id, session_code = main.create_session()
+
+    first = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+            session_code,
+        )
+    )
+    first_page = main.home(session_id).body.decode("utf-8")
+    second = asyncio.run(
+        main.apply_telegram_command(
+            "Start lecture on Photosynthesis using notes/sample-photosynthesis.md",
+            FakeRequest(),
+            session_code,
+        )
+    )
+    second_page = main.home(session_id).body.decode("utf-8")
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert 'data-lecture-revision="1"' in first_page
+    assert 'data-lecture-revision="2"' in second_page
+    assert main.build_control_message(session_code)["lecture_revision"] == 2
+
+
+def test_youtube_slide_embeds_autoplay_and_pauses_on_entry(monkeypatch):
+    main = load_main(monkeypatch)
+
+    lecture = main.build_lecture_from_md("Video Test", "## Video\n{{youtube:dQw4w9WgXcQ}}")
+    slide = lecture["slides"][0]
+
+    assert slide["wait"] is False
+    assert slide["pause_on_enter"] is True
+    assert slide["media"][0]["type"] == "youtube"
+    assert "autoplay=1" in slide["body"]
+    assert "mute=1" in slide["body"]
+    assert "allow=\"autoplay; encrypted-media; picture-in-picture; fullscreen\"" in slide["body"]
+
+
+def test_autonomous_lecture_pauses_once_when_landing_on_youtube_slide_then_resume_advances(monkeypatch):
+    main = load_main(monkeypatch, interval="0.05")
+    session_code = create_active_session(main)
+    main.LECTURE_SESSIONS[session_code] = main.build_lecture_from_md(
+        "Video Test",
+        "## Intro\nStart here.\n\n## Video\n{{youtube:dQw4w9WgXcQ}}\n\n## After Video\nContinue.\n\n## Wrap Up\nFinish.",
+    )
+    main.LECTURE_SLIDE_INDEX[session_code] = 0
+    main.LECTURE_RUNTIME_STATE[session_code] = "running"
+    main.LECTURE_CONTROL_STATE[session_code] = False
+
+    async def run_check():
+        task = asyncio.create_task(main.auto_advance_lecture(session_code))
+        await asyncio.sleep(0.08)
+        assert main.LECTURE_SLIDE_INDEX[session_code] == 1
+        assert main.LECTURE_CONTROL_STATE[session_code] is True
+        assert main.build_lecture_status(session_code)["is_paused"] is True
+
+        response = await main.apply_telegram_command("Resume lecture", FakeRequest(), session_code)
+        assert response["ok"] is True
+        await asyncio.sleep(0.13)
+        assert main.LECTURE_SLIDE_INDEX[session_code] >= 2
+        assert main.LECTURE_RUNTIME_STATE[session_code] == "running"
+        assert main.LECTURE_CONTROL_STATE[session_code] is False
+
+        main.LECTURE_RUNTIME_STATE[session_code] = "ended"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run_check())
+
+
 def test_telegram_started_parsed_lecture_waits_then_advances_manually(monkeypatch):
     main = load_main(monkeypatch, interval="0.01")
     session_code = create_active_session(main)
